@@ -1,0 +1,1 @@
+"""Internal PayPal payment administration."""

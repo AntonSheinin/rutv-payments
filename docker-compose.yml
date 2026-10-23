@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}
+    volumes: [payments-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U payments -d payments"]
+      interval: 5s
+      retries: 10
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://payments:${POSTGRES_PASSWORD}@db:5432/payments
+    ports: ["127.0.0.1:8100:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+volumes:
+  payments-db:
