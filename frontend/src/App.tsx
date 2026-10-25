@@ -1,7 +1,7 @@
 import { useWorkspace } from "./useWorkspace";
 import { errorMessage } from "./api";
 import type { Payment } from "./types";
-import { Menu, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { Menu, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   api,
@@ -23,7 +23,7 @@ import { Login } from "./Login";
 import { CreatePayment } from "./PaymentForm";
 import { Empty, Records } from "./Records";
 import { Navigation } from "./Navigation";
-import { emptyFilters, labels, View } from "./ui";
+import { dashboardFilters, emptyFilters, labels, View } from "./ui";
 export function App() {
   const requestPending = useSyncExternalStore(
     subscribeRequests,
@@ -45,8 +45,6 @@ export function App() {
     setDetail,
     detailType,
     setDetailType,
-    subscriptionImportPage,
-    setSubscriptionImportPage,
     error,
     setError,
     notice,
@@ -59,6 +57,8 @@ export function App() {
     detailError,
     synchronize,
     cancelSubscription,
+    balanceSyncing,
+    synchronizeBalance,
   } = useWorkspace(user, view);
   const [showResult, setShowResult] = useState(() =>
     ["/paypal/success", "/paypal/fail"].includes(location.pathname),
@@ -124,7 +124,7 @@ export function App() {
     setShowResult(false);
     setView(next);
     setPage(1);
-    setFilters(emptyFilters);
+    setFilters(next === "dashboard" ? dashboardFilters() : emptyFilters);
     setListing(null);
     setError("");
     setDetail(null);
@@ -198,12 +198,40 @@ export function App() {
               <span className={"environment " + options.environment}>
                 {options.environment}
               </span>
+              {view === "dashboard" && !showResult && (
+                <button
+                  className="secondary"
+                  disabled={
+                    requestPending ||
+                    balanceSyncing ||
+                    !options.paypal_configured
+                  }
+                  onClick={() => void synchronizeBalance()}
+                >
+                  <RefreshCw
+                    size={17}
+                    className={balanceSyncing ? "spin" : ""}
+                  />
+                  {balanceSyncing ? "Syncing balance…" : "Sync PayPal balance"}
+                </button>
+              )}
+              {view === "subscriptions" && !showResult && (
+                <button
+                  className="secondary"
+                  disabled={
+                    busy || requestPending || !options.paypal_configured
+                  }
+                  onClick={() => void synchronize({ scope: "subscriptions" })}
+                >
+                  <RefreshCw size={17} className={busy ? "spin" : ""} />
+                  Import subscriptions
+                </button>
+              )}
               <button
                 className="primary"
                 disabled={requestPending}
                 onClick={() => navigate("create")}
               >
-                <Plus size={17} />
                 Create payment
               </button>
             </div>
@@ -284,37 +312,6 @@ export function App() {
                           ? "Loading records..."
                           : "Records unavailable"}
                     </span>
-                    {view === "subscriptions" && (
-                      <form
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          void synchronize({
-                            scope: "subscriptions",
-                            page: subscriptionImportPage,
-                          });
-                        }}
-                      >
-                        <label>
-                          Import page
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
-                            required
-                            value={subscriptionImportPage}
-                            onChange={(event) =>
-                              setSubscriptionImportPage(
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                        <button className="secondary" disabled={busy}>
-                          <RefreshCw size={14} />
-                          Import subscriptions
-                        </button>
-                      </form>
-                    )}
                   </div>
                   {listing ? (
                     <>

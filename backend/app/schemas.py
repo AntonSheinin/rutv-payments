@@ -134,6 +134,8 @@ class SyncInput(Input):
     @model_validator(mode="after")
     def valid_target(self) -> Self:
         """Require the resource identifier or calendar range needed by the selected sync."""
+        if self.scope == "subscriptions" and self.page != 1:
+            raise ValueError("Subscription import reads all matching pages starting at page 1")
         if self.scope in {"subscription", "payment", "transaction"} and not self.resource_id:
             raise ValueError("A resource ID is required")
         if self.scope == "history":

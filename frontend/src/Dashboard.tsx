@@ -23,121 +23,190 @@ export function Dashboard({
         </p>
       </section>
     );
-  const selected = preferredCurrency
-      ? stats.currencies.find((c) => c.currency === preferredCurrency)
-      : stats.currencies[0],
-    currency = preferredCurrency || selected?.currency || "ILS";
-  const active = stats.current_subscriptions.ACTIVE ?? 0;
-  const points = stats.trends.filter(
-    (t) => t.currency === currency && t.kind === "collection",
-  );
-  const max = Math.max(...points.map((p) => Number(p.amount)), 1);
+  const currencies = preferredCurrency
+    ? [preferredCurrency]
+    : Array.from(
+        new Set([
+          ...stats.currencies.map((c) => c.currency),
+          ...(stats.balance?.balances.map((b) => b.currency) ?? []),
+        ]),
+      ).sort();
+  const totals = (currency: string) =>
+    stats.currencies.find((c) => c.currency === currency);
+  const timestamp = (value: string) =>
+    new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
   return (
     <>
       <div className="metrics">
         <Metric
-          title="Collected payments"
-          amount={money(selected?.collected || "0", currency)}
-          note={`${selected?.completed_count || 0} completed payments`}
+          title="Collected / Net collected"
+          amount={
+            !currencies.length
+              ? "No matching records"
+              : currencies.map((currency) => {
+                  const selected = totals(currency);
+                  return (
+                    <div key={currency}>
+                      {currency}: {money(selected?.collected ?? "0", currency)}{" "}
+                      /{" "}
+                      {selected && !selected.fees_complete
+                        ? "Net unavailable"
+                        : money(selected?.net_after_fees ?? "0", currency)}
+                    </div>
+                  );
+                })
+          }
+          note="Net after refunds, reversals and fees"
           icon={<ArrowDownLeft size={19} />}
           main
         />
         <Metric
-          title="Net collected"
-          amount={money(selected?.net_before_fees || "0", currency)}
-          note="After refunds & reversals · before fees"
+          title="PayPal balance"
+          amount={
+            !stats.balance
+              ? "Not synchronized"
+              : !currencies.length
+                ? "Unavailable for this currency"
+                : currencies.map((currency) => {
+                    const balance = stats.balance?.balances.find(
+                      (b) => b.currency === currency,
+                    );
+                    return (
+                      <div key={currency}>
+                        {currency}:{" "}
+                        {balance
+                          ? money(balance.total, currency)
+                          : "Unavailable for this currency"}
+                      </div>
+                    );
+                  })
+          }
+          note={
+            <>
+              Account balance · currency only
+              {stats.balance && (
+                <>
+                  <span>
+                    Last synced: {timestamp(stats.balance.last_synced_at)}
+                  </span>
+                  <span>Balance as of: {timestamp(stats.balance.as_of)}</span>
+                </>
+              )}
+            </>
+          }
           icon={<Wallet size={19} />}
         />
         <Metric
-          title="Active subscriptions"
-          amount={String(active)}
-          note="Current synchronized agreements"
-          icon={<Repeat size={19} />}
-        />
-        <Metric
           title="Refunds & reversals"
-          amount={money(
-            String(
-              Number(selected?.refunds || 0) + Number(selected?.reversals || 0),
-            ),
-            currency,
-          )}
-          note={`${selected?.pending_count || 0} pending · ${selected?.failed_count || 0} failed`}
+          amount={
+            !currencies.length
+              ? "No matching records"
+              : currencies.map((currency) => {
+                  const selected = totals(currency);
+                  return (
+                    <div key={currency}>
+                      {currency}: {money(selected?.refunds ?? "0", currency)} /{" "}
+                      {money(selected?.reversals ?? "0", currency)}
+                    </div>
+                  );
+                })
+          }
+          note="Refunds / Reversals"
           icon={<ArrowUpRight size={19} />}
         />
-      </div>
-      <div className="dashboard-grid">
-        <section className="panel">
-          <div className="panel-title">
-            <div>
-              <h2>Collection activity</h2>
-              <p>Completed collections · {currency}</p>
-            </div>
-            <button className="text-button" onClick={onViewPayments}>
-              View payments
-              <ArrowUpRight size={15} />
-            </button>
+        <article className="metric subscription-health">
+          <div>
+            <span>Subscription health</span>
+            <Repeat size={19} />
           </div>
-          {points.length ? (
-            <div className="bar-chart" aria-label="Daily collections">
-              {points.slice(-30).map((p, i) => (
-                <div
-                  key={p.date + i}
-                  title={`${p.date}: ${money(p.amount, currency)}`}
-                >
-                  <span
-                    style={{
-                      height: `${Math.max(3, (Number(p.amount) / max) * 160)}px`,
-                    }}
-                  />
-                  <small>{new Date(p.date).getDate()}</small>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="chart-empty">
-              <div className="empty-bars">
-                {[
-                  30, 55, 40, 75, 50, 90, 65, 105, 70, 85, 60, 110, 80, 95, 65,
-                  100,
-                ].map((n, i) => (
-                  <i key={i} style={{ height: n }} />
-                ))}
-              </div>
-              <span>Your collection activity will appear here</span>
-            </div>
-          )}
-          <div className="chart-caption">
-            Payment dates in your local timezone
-          </div>
-        </section>
-        <section className="panel subscription-summary">
-          <div className="panel-title">
-            <h2>Subscription health</h2>
-            <Repeat size={17} />
-          </div>
-          <div className="subscription-number">
-            {Object.values(stats.current_subscriptions).reduce(
-              (a, b) => a + b,
-              0,
-            )}
-            <span>total agreements</span>
-          </div>
-          {["ACTIVE", "SUSPENDED", "CANCELLED", "EXPIRED"].map((s) => (
-            <div className="status-row" key={s}>
-              <Badge status={s} />
-              <strong>{stats.current_subscriptions[s] ?? 0}</strong>
+          {["ACTIVE", "SUSPENDED"].map((status) => (
+            <div className="status-row" key={status}>
+              <Badge status={status} />
+              <strong>{stats.current_subscriptions[status] ?? 0}</strong>
             </div>
           ))}
-        </section>
+        </article>
       </div>
+      <section className="panel">
+        <div className="panel-title">
+          <div>
+            <h2>Collection activity</h2>
+            <p>Recorded one-time and subscription collections</p>
+          </div>
+          <button className="text-button" onClick={onViewPayments}>
+            View payments
+            <ArrowUpRight size={15} />
+          </button>
+        </div>
+        {currencies.map((currency) => {
+          const points = stats.trends
+            .filter((t) => t.currency === currency && t.kind === "collection")
+            .slice(-30);
+          const max = Math.max(...points.map((p) => Number(p.amount)), 1);
+          return (
+            <React.Fragment key={currency}>
+              <p className="chart-currency">{currency}</p>
+              {points.length ? (
+                <div className="chart-scroll">
+                  <div
+                    className="bar-chart"
+                    aria-label={`Daily collections · ${currency}`}
+                  >
+                    {points.map((p) => (
+                      <div
+                        key={p.date}
+                        title={`${p.date}: ${money(p.amount, currency)}`}
+                      >
+                        <span
+                          style={{
+                            height: `${Math.max(3, (Number(p.amount) / max) * 160)}px`,
+                          }}
+                        />
+                        <small>
+                          {new Intl.DateTimeFormat("en-GB", {
+                            day: "numeric",
+                            month: "short",
+                            timeZone: "UTC",
+                          }).format(
+                            new Date(p.date.slice(0, 10) + "T00:00:00Z"),
+                          )}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="chart-empty">
+                  <div className="empty-bars">
+                    {[
+                      30, 55, 40, 75, 50, 90, 65, 105, 70, 85, 60, 110, 80, 95,
+                      65, 100,
+                    ].map((n, i) => (
+                      <i key={i} style={{ height: n }} />
+                    ))}
+                  </div>
+                  <span>Your collection activity will appear here</span>
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+        {!currencies.length && (
+          <div className="chart-empty">No collections match these filters</div>
+        )}
+      </section>
       <section className="panel">
         <div className="panel-title">
           <div>
             <h2>Financial summary</h2>
             <p>Every currency stands on its own</p>
           </div>
-          <span className="badge">Verified records only</span>
         </div>
         <div className="table-scroll">
           <table>
@@ -198,8 +267,8 @@ function Metric({
   main = false,
 }: {
   title: string;
-  amount: string;
-  note: string;
+  amount: React.ReactNode;
+  note: React.ReactNode;
   icon: React.ReactNode;
   main?: boolean;
 }) {

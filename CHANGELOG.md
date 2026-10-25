@@ -2,6 +2,33 @@
 
 Changes are grouped by commit date, newest first.
 
+## 2026-10-25 — Dashboard balances and subscription reporting
+
+### Added
+
+- PayPal balance card and an explicit balance-only sync button beside Create payment. The saved account snapshot shows its last successful sync and provider refresh times, and remains visible after sync errors.
+- Total charged (recorded) on the Subscriptions table, calculated from actual successful collections before refunds and fees, with currencies kept separate.
+
+### Changed
+
+- Combined collected and net collected amounts into one card, separated by a slash. Net deducts refunds and fees and includes only provider-confirmed fee credits; missing fee information keeps net unavailable.
+- Subscription health now shares the top card row and shows only Active and Suspended counts across all dates, retaining other applicable filters. Removed the duplicate Active subscriptions card.
+- Dashboard defaults and reset now use ILS and the current browser-local calendar month. All currencies displays separate amounts.
+- Import subscriptions moved beside Create payment and reads all returned Active/Suspended agreement pages in one explicit request. Removed the Import page control and the table's explanatory paragraph.
+- Collection activity uses the full width, shows day/month labels and includes recorded one-time and subscription collections. Removed the timezone caption and the Financial summary badge.
+- Removed the plus icon from Create payment and matched the heading action button heights.
+
+### Fixed
+
+- Subscription health no longer shows an agreement total that includes hidden approval-pending states.
+- Checkout-result filters now apply to financial reporting, and chart scaling uses only the displayed collection buckets.
+- Balance synchronization validates the merchant, preserves the last verified snapshot on failures and prevents older provider data from replacing newer balances.
+
+### Verification
+
+- Full backend suite: 183 tests passed; an additional mixed-currency/zero-total regression passed separately. All 45 Chromium tests, lint, formatting, typing, frontend/container builds and local service smoke checks passed.
+- Provider tests use mocked responses. Balance permission and complete merchant-wide subscription coverage still require actual account verification; see [integration](docs/INTEGRATION.md).
+
 ## 2026-10-25 — Payment and API simplification
 
 ### Changed

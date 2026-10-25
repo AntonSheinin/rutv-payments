@@ -1,6 +1,6 @@
 import { ListFilter, RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { emptyFilters, SearchState, View } from "./ui";
+import { dashboardFilters, emptyFilters, SearchState, View } from "./ui";
 export function FiltersBar({
   filters,
   setFilters,
@@ -162,9 +162,13 @@ export function FiltersBar({
           </label>
           <button
             className="text-button"
-            onClick={() => setFilters(emptyFilters)}
+            onClick={() =>
+              setFilters(
+                view === "dashboard" ? dashboardFilters() : emptyFilters,
+              )
+            }
           >
-            Clear filters
+            {view === "dashboard" ? "Reset filters" : "Clear filters"}
           </button>
         </div>
       )}

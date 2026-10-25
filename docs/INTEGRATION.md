@@ -51,6 +51,24 @@ The original merchant configuration was rejected by Orders with HTTP 422 PAYEE_A
 
 ## Remaining account-dependent verification
 
+- Subscription import follows [List subscriptions](https://developer.paypal.com/api/subscriptions/v1/subscriptions-list/):
+  `statuses=ACTIVE,SUSPENDED`, `page_size=20`, page numbers starting at 1, and
+  provider `next` links controlling continuation. Each agreement is refreshed
+  through its exact ID with effective plan fields. Automated pagination/status
+  checks use mocks; the earlier actual single-page read does not certify complete
+  merchant-wide coverage or charged installment history.
+
+- Dashboard balance-only reads use [List all balances](https://developer.paypal.com/api/transaction-search/v1/balances-get/)
+  with the `https://uri.paypal.com/services/reporting/balances/read` scope. This is
+  separate from Transaction Search permission. Access for the configured merchant
+  has not been tested; local contract tests mock provider responses. PayPal documents
+  up to three hours of balance reporting delay.
+- Refund fee accounting follows the [current Israel agreement](https://securepayments.paypal.com/il/legalhub/paypal/useragreement-full?locale.x=en_IL),
+  which retains original receiving fees, while accepting only explicit fee-credit
+  evidence from [Payments v2 refund breakdowns](https://github.com/paypal/paypal-rest-api-specifications/blob/main/openapi/payments_payment_v2.json)
+  or the existing sale product's [detailed refund contract](https://developer.paypal.com/api/deprecated/payments/v1/definitions/detailed_refund).
+  No fee reimbursement is inferred from a full or partial refund.
+
 - Actual approved/declined/3DS Sandbox card payment and capture outcomes, refund acceptance and pending/unknown reconciliation. Automated financial tests use mocked provider responses; they prove local behavior, not account behavior.
 - Guest recurring checkout, installment collection, cancellation and PayPal notification behavior on this merchant. No application configuration gate is applied. No-account recurring consent is not implied by one-time guest eligibility.
 - Subscription installment sale-refund capability. No application configuration gate is applied. No transfer/send-money or alternate API is substituted.

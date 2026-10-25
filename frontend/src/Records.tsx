@@ -36,12 +36,6 @@ export function Records({
 }) {
   return (
     <div className="table-scroll">
-      {view === "subscriptions" && (
-        <p className="muted">
-          Charged counts include recorded successful payments; imported history
-          may be incomplete. Remaining payments reflect the last PayPal refresh.
-        </p>
-      )}
       <table>
         <thead>
           <tr>
@@ -50,6 +44,7 @@ export function Records({
             {view === "subscriptions" && (
               <>
                 <th>Charged payments (recorded)</th>
+                <th>Total charged (recorded)</th>
                 <th>Remaining payments</th>
               </>
             )}
@@ -120,6 +115,9 @@ export function Records({
                         {subscription?.charged_payments ?? "Not available"}
                       </td>
                       <td>
+                        {money(subscription?.total_charged, row.currency)}
+                      </td>
+                      <td>
                         {subscription?.payments_unlimited
                           ? "Until cancelled"
                           : (subscription?.remaining_payments ??
@@ -171,7 +169,7 @@ export function Records({
             })
           ) : (
             <tr>
-              <td colSpan={(open ? 6 : 5) + (view === "subscriptions" ? 2 : 0)}>
+              <td colSpan={(open ? 6 : 5) + (view === "subscriptions" ? 3 : 0)}>
                 <Empty
                   title={busy ? "Loading recordsâ€¦" : "No matching records"}
                   description="Try a different search or create a payment."

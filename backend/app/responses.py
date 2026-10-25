@@ -104,6 +104,7 @@ class SubscriptionResponse(PublicRecord):
     last_synced_at: datetime | None
     checkout_status: CheckoutStatus = None
     charged_payments: int = 0
+    total_charged: Money | None = None
     remaining_payments: int | None = None
     payments_unlimited: bool = False
 
@@ -232,12 +233,28 @@ class TrendPoint(BaseModel):
     amount: Money
 
 
+class BalanceAmount(BaseModel):
+    """One supported currency's provider-reported account balance."""
+
+    currency: Currency
+    total: Money
+
+
+class BalanceSnapshot(BaseModel):
+    """Last successful explicit balance read, separate from local reporting filters."""
+
+    balances: list[BalanceAmount]
+    as_of: datetime
+    last_synced_at: datetime
+
+
 class StatisticsResponse(BaseModel):
     """Local aggregates and the provider coverage behind those observations."""
 
     currencies: list[CurrencyTotals]
     trends: list[TrendPoint]
     current_subscriptions: dict[str, int]
+    balance: BalanceSnapshot | None
     coverage: list[CoverageResponse]
     scope: str
     timezone: str

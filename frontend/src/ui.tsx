@@ -25,6 +25,19 @@ export const emptyFilters: SearchState = {
   max_amount: "",
   is_subscription: "",
 };
+
+/** Dashboard defaults follow the operator's current local calendar month. */
+export function dashboardFilters(): SearchState {
+  const now = new Date();
+  const calendar = (day: Date) =>
+    `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  return {
+    ...emptyFilters,
+    currency: "ILS",
+    start_date: calendar(new Date(now.getFullYear(), now.getMonth(), 1)),
+    end_date: calendar(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+  };
+}
 export const labels: Record<View, string> = {
   dashboard: "Dashboard",
   payments: "Payments",

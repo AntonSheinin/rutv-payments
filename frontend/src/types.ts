@@ -82,6 +82,7 @@ export interface Subscription extends RecordIdentity {
   last_synced_at: string | null;
   checkout_status: CheckoutStatus;
   charged_payments: number;
+  total_charged: string | null;
   remaining_payments: number | null;
   payments_unlimited: boolean;
 }
@@ -186,11 +187,18 @@ export interface Stats {
   currencies: CurrencyTotals[];
   trends: TrendPoint[];
   current_subscriptions: Record<string, number>;
+  balance: BalanceSnapshot | null;
   coverage: Coverage[];
   scope: string;
   timezone: string;
   environment: string;
   filters: Record<string, unknown>;
+}
+
+export interface BalanceSnapshot {
+  balances: { currency: Currency; total: string }[];
+  as_of: string;
+  last_synced_at: string;
 }
 
 export interface User {

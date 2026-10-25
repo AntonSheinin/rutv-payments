@@ -1,17 +1,17 @@
 import { test, expect, checkout, fill } from "./fixtures";
 
-test("subscription imports request only the operator-selected page", async ({
+test("subscription import is in the heading and requests all active/suspended agreements", async ({
   page,
 }) => {
-  const pages: number[] = [];
+  const requests: unknown[] = [];
   await page.route("**/api/v1/synchronizations", (route) => {
-    pages.push(route.request().postDataJSON().page);
+    requests.push(route.request().postDataJSON());
     return route.fulfill({
       json: {
         processed: 5,
         excluded: 0,
-        next_page: pages.at(-1)! + 1,
-        coverage_note: "One page read.",
+        next_page: null,
+        coverage_note: "All Active/Suspended agreement pages read.",
       },
     });
   });
@@ -24,18 +24,15 @@ test("subscription imports request only the operator-selected page", async ({
   await page
     .getByRole("button", { name: "Import subscriptions", exact: true })
     .click();
-  await expect.poll(() => pages.length).toBe(1);
+  await expect.poll(() => requests.length).toBe(1);
   await expect(page.locator(".notice")).toHaveCount(0);
-  await page.getByLabel("Import page", { exact: true }).fill("2");
+  await expect(page.getByLabel("Import page", { exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Import subscriptions", exact: true }),
-  ).toBeEnabled();
-  await page
-    .getByRole("button", { name: "Import subscriptions", exact: true })
-    .click();
-  await expect.poll(() => pages.length).toBe(2);
-  await expect(page.locator(".notice")).toHaveCount(0);
-  expect(pages).toEqual([1, 2]);
+    page
+      .locator(".page-actions")
+      .getByRole("button", { name: "Import subscriptions", exact: true }),
+  ).toBeVisible();
+  expect(requests).toEqual([{ scope: "subscriptions" }]);
 });
 
 for (const mode of ["approved", "cancelled", "error", "blocked"] as const)
@@ -147,6 +144,7 @@ test("subscriptions show recorded charges and finite, unlimited or unknown remai
             amount: "10.00",
             currency: "ILS",
             charged_payments: 3,
+            total_charged: "27.50",
             remaining_payments: 9,
             payments_unlimited: false,
           },
@@ -157,6 +155,7 @@ test("subscriptions show recorded charges and finite, unlimited or unknown remai
             amount: "10.00",
             currency: "ILS",
             charged_payments: 4,
+            total_charged: "40.00",
             remaining_payments: null,
             payments_unlimited: true,
           },
@@ -167,6 +166,7 @@ test("subscriptions show recorded charges and finite, unlimited or unknown remai
             amount: "10.00",
             currency: "ILS",
             charged_payments: 0,
+            total_charged: "0.00",
             remaining_payments: null,
             payments_unlimited: false,
           },
@@ -183,12 +183,21 @@ test("subscriptions show recorded charges and finite, unlimited or unknown remai
   await expect(
     page.getByRole("columnheader", { name: "Remaining payments" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "Total charged (recorded)" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Charged counts include recorded successful payments", {
+      exact: false,
+    }),
+  ).toHaveCount(0);
   const finite = page
     .getByRole("row")
     .filter({ hasText: "Finite subscription" });
   await expect(
     finite.getByRole("cell", { name: "3", exact: true }),
   ).toBeVisible();
+  await expect(finite).toContainText("27.50");
   await expect(
     finite.getByRole("cell", { name: "9", exact: true }),
   ).toBeVisible();

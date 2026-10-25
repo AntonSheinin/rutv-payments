@@ -14,19 +14,18 @@ import type {
   SyncResult,
   CancellationResult,
 } from "./types";
-import { emptyFilters, query } from "./ui";
+import { dashboardFilters, query } from "./ui";
 import type { SearchState, View } from "./ui";
 
 /** Local read/action state with bounded pagination and stale-response suppression. */
 export function useWorkspace(user: User | null, view: View) {
-  const [filters, setFilters] = useState<SearchState>(emptyFilters),
+  const [filters, setFilters] = useState<SearchState>(dashboardFilters),
     [page, setPage] = useState(1),
     [pageSize, setPageSize] = useState(20),
     [listing, setListing] = useState<Page<Payment | Subscription> | null>(null),
     [stats, setStats] = useState<Stats | null>(null),
     [detail, setDetail] = useState<WorkspaceRecord | null>(null),
     [detailType, setDetailType] = useState<ResourceView>("payments");
-  const [subscriptionImportPage, setSubscriptionImportPage] = useState(1);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
@@ -38,6 +37,21 @@ export function useWorkspace(user: User | null, view: View) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const detailId = detail?.id;
+  const [balanceSyncing, setBalanceSyncing] = useState(false);
+  async function synchronizeBalance() {
+    if (balanceSyncing) return;
+    setBalanceSyncing(true);
+    setError("");
+    try {
+      await api("/balance/synchronize", "POST");
+      // Invalidate an older in-flight dashboard read before it can restore a stale balance.
+      setRevision((r) => r + 1);
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setBalanceSyncing(false);
+    }
+  }
   useEffect(() => {
     if (!user || !detailId) return;
     let active = true;
@@ -179,8 +193,6 @@ export function useWorkspace(user: User | null, view: View) {
     setDetail,
     detailType,
     setDetailType,
-    subscriptionImportPage,
-    setSubscriptionImportPage,
     error,
     setError,
     notice,
@@ -193,5 +205,7 @@ export function useWorkspace(user: User | null, view: View) {
     detailError,
     synchronize,
     cancelSubscription,
+    balanceSyncing,
+    synchronizeBalance,
   };
 }

@@ -9,15 +9,12 @@
     min-height: 170px;
   }
   .metric > strong {
-    font-size: 34px;
+    font-size: 25px;
   }
 }
 @media (max-width: 1200px) {
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .dashboard-grid {
-    grid-template-columns: 1fr 260px;
   }
   .metric {
     min-height: 140px;
@@ -91,9 +88,6 @@
   }
   .page-heading p {
     font-size: 14px;
-  }
-  .dashboard-grid {
-    grid-template-columns: 1fr;
   }
   .metrics {
     gap: 10px;
@@ -204,7 +198,6 @@ textarea::placeholder {
 .panel-title p,
 .panel-title > span,
 .empty p,
-.chart-caption,
 .pagination {
   font-size: 14px;
 }

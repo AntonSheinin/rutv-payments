@@ -42,6 +42,34 @@ The local 180-day cutoff uses the original aware provider payment timestamp. Mis
 
 Keep ILS/USD/EUR totals separate. Decimal is authoritative; money at API boundaries is text. Unknown fees remain unknown. Statistics describe available synchronized records, not the PayPal account balance. Explicit imports process one page/window, record exclusions and do not assert continuous account-wide coverage. Unresolved partial/reversal mappings remain coverage gaps rather than guessed revenue.
 
+Subscription agreement import is the explicit exception to one-page reads: one
+click reads all pages returned by the ACTIVE/SUSPENDED filter within the existing
+120-second request timeout. It starts at page 1 and uses 20 agreements per page.
+No background continuation or automatic retry runs after errors/timeouts; already
+committed facts remain, while a failed scan never advances successful coverage.
+The action imports agreements only. Total charged sums recorded completed
+collections in the agreement currency, including collections subsequently
+refunded; refunds/fees do not reduce this gross charged figure. Mixed currencies
+make the figure unavailable rather than producing an invalid combined amount.
+
+Dashboard net collected deducts completed refunds/reversals and recorded fees,
+and includes restorations. Refund fee credits are recorded as negative fees only
+when explicitly reported by the selected provider product: v2
+`seller_payable_breakdown.paypal_fee`, or sale refunds'
+`refund_from_transaction_fee`. No proportional fee credit is assumed. Missing fee
+facts keep net after fees unavailable. Current PayPal terms generally retain
+original receiving fees on refunds; actual returned breakdowns remain the evidence
+for any credit. Historical rows without fee evidence stay unknown until an
+explicit resource read supplies it.
+
+Balance synchronization reads only `/v1/reporting/balances`. The durable
+`paypal_balance` SyncState row holds one validated snapshot, excluded from history
+coverage. Updates serialize after provider HTTP, including first insertion, and
+older provider refresh times cannot replace newer facts. Failure retains the last
+successful snapshot. Local reporting filters never turn an account balance into a
+date-window or customer balance. The UI separately shows the successful local sync
+time and the provider's refresh time; neither promises a real-time balance.
+
 ## Local configuration and diagnostics
 
 Keep .env and .local-access.json private. AUTH_USERS entries contain only password_hash; API_KEYS entries only sha256. All authenticated identities have the same access. Preserve password hashes/merchant/client credentials when editing configuration; use single-quoted JSON values in .env so Compose does not interpolate Argon2 dollar signs. Restart after configuration changes.

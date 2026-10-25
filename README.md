@@ -4,6 +4,24 @@ Standalone local FastAPI + PostgreSQL + React staff workspace. Customers never a
 
 Open `/` to start on the dashboard after signing in. Returning to Dashboard from a checkout result restores `/`, so reloading opens the dashboard too.
 
+The dashboard defaults to ILS and the current calendar month in the operator's
+browser timezone. Search and applicable filters scope local collection totals,
+activity and financial summary. Subscription health shows only Active and
+Suspended agreements across all dates, retaining other applicable filters.
+Reset filters restores the dashboard defaults; All currencies keeps amounts separate.
+The four summary cards share one responsive row. Collection activity shows recorded
+one-time and subscription collections beneath them, with day/month labels for the
+last 30 available collection buckets in each selected currency.
+
+Collected / Net collected shows gross collections and the net after completed
+refunds, reversals, restorations and known fees. Missing fee data leaves net
+unavailable. PayPal balance is a separate account snapshot: only currency selection
+affects it. **Sync PayPal balance**, beside Create payment on Dashboard, reads only
+balances and saves the last successful snapshot. Last synced and Balance as of
+show local date/time to the minute. Provider errors retain the previous snapshot.
+No dashboard load or filter change calls PayPal. Balance reporting requires the
+merchant's separate List Balances permission and may lag by up to three hours.
+
 See [CHANGELOG.md](CHANGELOG.md) for the dated project history.
 
 See [operations](docs/OPERATIONS.md) for financial rules, [integration](docs/INTEGRATION.md) for provider contracts and remaining merchant checks, and [verification](docs/VERIFICATION.md) for current validation results.
@@ -17,6 +35,16 @@ Install Docker Engine and Docker Compose on Ubuntu. Development checks use Pytho
 ```sh
 docker compose up --build -d
 ```
+
+After changing the source, rebuild and recreate the API to serve the updated
+frontend and backend:
+
+```sh
+docker compose up -d --build api
+```
+
+A container restart alone reuses the existing image and its previously built UI.
+Refresh the browser after the rebuilt API starts. The database volume is preserved.
 
 Open **http://localhost:8100**. Use localhost consistently for the app and PayPal returns. API startup applies migrations and obtains singleton database ownership. Run one Uvicorn process. There is no worker, periodic polling, webhook, scheduled retry or startup replay.
 
@@ -59,7 +87,7 @@ All displayed timestamps, calendar filters and chart day boundaries use the oper
 
 Collection rows have a rectangular **Refund** button with extra spacing beside the payment amount: the primary button color when eligible, grey and disabled when unavailable. The form shows payment date, original/refunded/remaining amounts and the deadline; review and confirm a positive partial refund or the full remaining amount. Refund currency is fixed. Eligibility uses the original provider timestamp plus 180 days, supported product capability and remaining balance after completed/pending/uncertain reservations. The backend rechecks every confirmation. The exact reviewed amount is sent, with no automatic adjustment, retry or subscription cancellation. PayPal's current acceptance decision remains authoritative.
 
-Lists/statistics read local data only and show verification time. Explicit Refresh from PayPal is read-only. Imports read one page or one requested date window; another page requires another click/request. History windows are at most 31 days; unsupported/ambiguous entries are excluded with coverage information. The configured app currently returns 403 NOT_AUTHORIZED for Transaction Search; enable/obtain that reporting permission before account-wide history import can work. Subscription details provide an explicit installment date-window action. No automatic backfill or alternate-API lookup loop exists. Imported payments without internal metadata remain unassociated; the service does not offer manual metadata editing.
+Lists/statistics read local data only and show verification time. Explicit Refresh from PayPal is read-only. **Import subscriptions**, beside Create payment on the Subscriptions page, reads all returned ACTIVE/SUSPENDED agreement pages in one explicit request, independent of local table filters. It does not fetch installment history. The total charged column sums recorded successful collections at their actual amounts, before refunds and fees; it never multiplies the current billing amount by cycle counts or combines currencies. History imports still read one page or one requested date window; another history page requires another click/request. History windows are at most 31 days; unsupported/ambiguous entries are excluded with coverage information. The configured app currently returns 403 NOT_AUTHORIZED for Transaction Search; enable/obtain that reporting permission before account-wide history import can work. Subscription details provide an explicit installment date-window action. No automatic backfill or alternate-API lookup loop exists. Imported payments without internal metadata remain unassociated; the service does not offer manual metadata editing.
 
 ## API and authentication
 
@@ -71,6 +99,17 @@ Authenticated OpenAPI: `/api/v1/openapi.json`. Login and session restoration ret
 - `GET /api/v1/checkout-submissions/{intent_key}`: read-only result lookup after response loss. Never resubmit a mutation to inspect it.
 - Direct refunds and subscription cancellation require an Idempotency-Key and return their actual observed result. A reused key with different input is rejected. Unconfirmed results are Failed; active financial reservations remain until resolved.
 - `/payments`, `/transactions`, `/subscriptions`, `/statistics`: local search/reporting. `/synchronizations` performs explicit bounded provider reads. Client names and agreement numbers cannot be edited after creation; no association PATCH endpoints are exposed.
+- `POST /api/v1/balance/synchronize`: authenticated balance-only provider read;
+  validates the configured merchant and supported-currency totals, then saves and
+  returns the snapshot. `/statistics` includes that saved snapshot independently
+  of reporting filters. No payment or subscription history is synchronized.
+- `POST /api/v1/synchronizations` with `scope: "subscriptions"`: reads all returned
+  ACTIVE/SUSPENDED agreement pages, starting at page 1, within the request timeout.
+  It does not use local search/date/currency filters or import installment history.
+  A failed scan retains already committed facts without claiming a complete scan.
+- Subscription list and detail responses expose `total_charged` as decimal text
+  in the agreement currency, or null when currencies cannot be combined safely.
+  This is the gross recorded collection sum, independent of history pagination.
 
 Public output is declared in `backend/app/responses.py` and the matching frontend
 contracts in `frontend/src/types.ts`. Payment responses retain names/terms,

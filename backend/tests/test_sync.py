@@ -7,10 +7,141 @@ from unittest.mock import AsyncMock
 import pytest
 from app.errors import ReconciliationError
 from app.models import Subscription, SyncState, Transaction, now
+from app.reporting import Filters, statistics
 from app.schemas import SyncInput
 from app.sync import refresh_subscription, synchronize
 from sqlalchemy import select
 from support import capture
+
+
+async def test_subscription_import_reads_all_active_suspended_pages(sessions, settings):
+    """One explicit import traverses filtered pages, deduplicates IDs and excludes other states."""
+    paypal = AsyncMock()
+
+    async def request(method, path, **kwargs):
+        assert method == "GET"
+        if path == "/v1/billing/subscriptions":
+            params = kwargs["params"]
+            assert params["statuses"] == "ACTIVE,SUSPENDED" and params["page_size"] == 20
+            if params["page"] == 1:
+                return {
+                    "subscriptions": [
+                        {"id": "I-ACTIVE", "status": "ACTIVE"},
+                        {"id": "I-CANCELLED", "status": "CANCELLED"},
+                    ],
+                    "links": [{"rel": "next"}],
+                }
+            assert params["page"] == 2
+            return {
+                "subscriptions": [
+                    {"id": "I-ACTIVE", "status": "ACTIVE"},
+                    {"id": "I-SUSPENDED", "status": "SUSPENDED"},
+                ],
+                "links": [],
+            }
+        remote = path.rsplit("/", 1)[-1]
+        assert remote in {"I-ACTIVE", "I-SUSPENDED"}
+        return {
+            "id": remote,
+            "status": "ACTIVE" if remote == "I-ACTIVE" else "SUSPENDED",
+            "plan": {
+                "billing_cycles": [
+                    {
+                        "tenure_type": "REGULAR",
+                        "pricing_scheme": {
+                            "fixed_price": {"value": "10.00", "currency_code": "ILS"}
+                        },
+                    }
+                ]
+            },
+        }
+
+    paypal.request.side_effect = request
+    async with sessions() as db:
+        result = await synchronize(db, SyncInput(scope="subscriptions"), paypal, settings)
+        assert result["processed"] == 2 and result["excluded"] == 1
+        assert result["next_page"] is None
+        assert set(await db.scalars(select(Subscription.status))) == {"ACTIVE", "SUSPENDED"}
+        assert not list(await db.scalars(select(Transaction)))
+    assert paypal.request.await_count == 4
+
+
+async def test_failed_later_subscription_page_does_not_claim_complete_import(sessions, settings):
+    """Previously committed agreement facts survive; coverage never advances on page failure."""
+    paypal = AsyncMock()
+    paypal.request.side_effect = [
+        {"subscriptions": [{"id": "I-FIRST", "status": "ACTIVE"}], "links": [{"rel": "next"}]},
+        {
+            "id": "I-FIRST",
+            "status": "ACTIVE",
+            "plan": {
+                "billing_cycles": [
+                    {
+                        "tenure_type": "REGULAR",
+                        "pricing_scheme": {
+                            "fixed_price": {"value": "10.00", "currency_code": "ILS"}
+                        },
+                    }
+                ]
+            },
+        },
+        ReconciliationError("Invalid provider result list: subscriptions"),
+    ]
+    async with sessions() as db:
+        with pytest.raises(ReconciliationError):
+            await synchronize(db, SyncInput(scope="subscriptions"), paypal, settings)
+        await db.rollback()
+        assert list(await db.scalars(select(Subscription.provider_id))) == ["I-FIRST"]
+        assert await db.scalar(select(SyncState).where(SyncState.scope == "subscriptions")) is None
+
+
+async def test_repeated_installment_window_keeps_one_collection(sessions, settings, monkeypatch):
+    """Explicitly re-reading an installment preserves its subscription/payment links and totals."""
+    from datetime import datetime
+
+    monkeypatch.setattr("app.sync.now", lambda: datetime.fromisoformat("2026-10-25T12:00:00+00:00"))
+    paypal = AsyncMock()
+    remote = {
+        "id": "I-HEALTH",
+        "status": "ACTIVE",
+        "create_time": "2026-10-21T10:00:00Z",
+        "plan": {
+            "billing_cycles": [
+                {
+                    "tenure_type": "REGULAR",
+                    "pricing_scheme": {"fixed_price": {"currency_code": "ILS", "value": "10.00"}},
+                }
+            ]
+        },
+    }
+    installment = {
+        "id": "INSTALLMENT-ONCE",
+        "status": "COMPLETED",
+        "time": "2026-10-21T12:00:00Z",
+        "amount_with_breakdown": {"gross_amount": {"currency_code": "ILS", "value": "10.00"}},
+    }
+    paypal.request.side_effect = [
+        remote,
+        {"transactions": [installment]},
+        remote,
+        {"transactions": [installment]},
+    ]
+    async with sessions() as db:
+        sub = Subscription(provider_id="I-HEALTH", status="ACTIVE", currency="ILS")
+        db.add(sub)
+        await db.commit()
+        data = SyncInput(
+            scope="subscription", resource_id=sub.id, start_date="2026-10-21", end_date="2026-10-21"
+        )
+        for _ in range(2):
+            await synchronize(db, data, paypal, settings)
+        rows = (await db.scalars(select(Transaction))).all()
+        assert len(rows) == 1
+        assert rows[0].subscription_id == sub.id and rows[0].payment_id is not None
+        result = await statistics(db, Filters(), "sandbox")
+        assert result["trends"][0]["amount"] == "10.00"
+        assert result["currencies"][0]["completed_count"] == 1
+    assert all(call.args[0] == "GET" for call in paypal.request.await_args_list)
 
 
 async def test_history_import_commits_verified_items_and_reports_exclusions(
@@ -110,6 +241,7 @@ async def test_missing_or_unsupported_imported_price_preserves_verified_snapshot
         ("subscriptions", {"subscriptions": [None], "links": []}),
         ("subscriptions", {"subscriptions": []}),
         ("subscriptions", {"subscriptions": [], "links": [{}]}),
+        ("subscriptions", {"subscriptions": [], "links": [{"rel": "next"}]}),
         ("history", {}),
         ("history", {"transaction_details": [], "total_pages": None}),
         ("history", {"transaction_details": [], "total_pages": True}),
@@ -168,7 +300,6 @@ async def test_malformed_import_never_advances_success(sessions, settings, scope
     "scope,payload,next_page",
     [
         ("subscriptions", {"subscriptions": [], "links": []}, None),
-        ("subscriptions", {"subscriptions": [], "links": [{"rel": "next"}]}, 2),
         ("history", {"transaction_details": [], "total_pages": 0}, None),
     ],
 )

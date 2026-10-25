@@ -9,14 +9,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 
 from app.auth import Config, User, authenticate
+from app.balance import synchronize_balance
 from app.db import Db, Mutation
 from app.reporting import Filters, statistics
-from app.responses import StatisticsResponse, SyncResponse
+from app.responses import BalanceSnapshot, StatisticsResponse, SyncResponse
 from app.schemas import SyncInput
 from app.sync import synchronize
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(authenticate)])
 log = logging.getLogger("payments.reporting")
+
+
+@router.post("/balance/synchronize", response_model=BalanceSnapshot)
+async def balance_synchronization(
+    request: Request, db: Db, settings: Config, guard: Mutation
+) -> BalanceSnapshot:
+    """Refresh only the configured merchant's account balance on explicit request."""
+    return await synchronize_balance(db, request.app.state.paypal, settings)
 
 
 @router.get("/statistics", response_model=StatisticsResponse)

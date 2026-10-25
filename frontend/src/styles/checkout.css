@@ -213,6 +213,7 @@
 }
 .bar-chart > div {
   flex: 1;
+  min-width: 45px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -227,6 +228,7 @@
 }
 .bar-chart small {
   margin-top: 8px;
+  white-space: nowrap;
 }
 .login {
   display: grid;

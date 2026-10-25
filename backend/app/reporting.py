@@ -13,6 +13,7 @@ from sqlalchemy import Select, SQLColumnExpression, String, cast, func, or_, sel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.balance import BALANCE_SCOPE
 from app.models import Payment, Subscription, SyncState, Transaction
 from app.responses import CoverageResponse, PaymentRecord, SubscriptionResponse, TransactionResponse
 from app.schemas import Currency, Timezone
@@ -134,6 +135,8 @@ def filtered[T: (Payment, Subscription, Transaction)](
         result.append(or_(*matches))
     if f.checkout_status:
         if model is Payment:
+            result.append(Payment.checkout_status == f.checkout_status)
+        elif model is Transaction:
             result.append(Payment.checkout_status == f.checkout_status)
         elif model is Subscription:
             result.append(
@@ -303,20 +306,15 @@ async def statistics(db: AsyncSession, f: Filters, environment: str) -> dict[str
             .order_by(bucket)
         )
     ).all()
-    # Current subscription counts are independent of transaction date/status filters.
-    sub_query = select(Subscription.status, func.count()).group_by(Subscription.status)
-    if f.currency:
-        sub_query = sub_query.where(Subscription.currency == f.currency)
-    if f.origin:
-        sub_query = sub_query.where(Subscription.origin == f.origin)
-    if f.q:
-        sub_query = sub_query.where(
-            or_(
-                Subscription.agreement_number.icontains(f.q, autoescape=True),
-                Subscription.client_name.icontains(f.q, autoescape=True),
-                Subscription.payer_email.icontains(f.q, autoescape=True),
-            )
-        )
+    # Agreement health spans all dates; collection windows do not limit current states.
+    sub_statement, _, _ = filtered(
+        Subscription, f.model_copy(update={"start_date": None, "end_date": None})
+    )
+    if f.is_subscription is False:
+        sub_statement = sub_statement.where(Subscription.id.is_(None))
+    subs = sub_statement.where(Subscription.status.in_(["ACTIVE", "SUSPENDED"])).subquery()
+    sub_query = select(subs.c.status, func.count()).group_by(subs.c.status)
+    balance = await db.scalar(select(SyncState).where(SyncState.scope == BALANCE_SCOPE))
     log.debug("statistics_aggregated currencies=%s trend_points=%s", len(result), len(trends))
     return {
         "currencies": list(result.values()),
@@ -324,10 +322,15 @@ async def statistics(db: AsyncSession, f: Filters, environment: str) -> dict[str
             {"date": d, "currency": c, "kind": k, "amount": str(a)} for d, c, k, a in trends
         ],
         "current_subscriptions": dict((await db.execute(sub_query)).all()),
+        "balance": balance.checkpoint if balance else None,
         "coverage": [
             CoverageResponse.model_validate(s).model_dump(mode="json")
             for s in (
-                await db.scalars(select(SyncState).where(SyncState.scope != "database_identity"))
+                await db.scalars(
+                    select(SyncState).where(
+                        SyncState.scope.not_in(["database_identity", BALANCE_SCOPE])
+                    )
+                )
             )
         ],
         "scope": "Records created or imported into this service; coverage may be incomplete",
@@ -341,20 +344,25 @@ async def subscription_progress(db: AsyncSession, items: list[dict[str, Any]]) -
     """Add recorded collections and provider-reported future regular installments."""
     if not items:
         return
-    counts = {
-        identifier: count
-        for identifier, count in (
-            await db.execute(
-                select(Transaction.subscription_id, func.count())
-                .where(
-                    Transaction.subscription_id.in_([item["id"] for item in items]),
-                    Transaction.kind == "collection",
-                    Transaction.status == "completed",
-                )
-                .group_by(Transaction.subscription_id)
+    charges: dict[str, list[tuple[str, int, Decimal]]] = {}
+    for identifier, currency, count, amount in (
+        await db.execute(
+            select(
+                Transaction.subscription_id,
+                Transaction.currency,
+                func.count(),
+                func.sum(Transaction.amount),
             )
-        ).all()
-    }
+            .where(
+                Transaction.subscription_id.in_([item["id"] for item in items]),
+                Transaction.kind == "collection",
+                Transaction.status == "completed",
+            )
+            .group_by(Transaction.subscription_id, Transaction.currency)
+        )
+    ).all():
+        assert identifier is not None  # The IN predicate excludes unlinked collections.
+        charges.setdefault(identifier, []).append((currency, count, amount))
     outcomes = dict(
         (
             await db.execute(
@@ -380,8 +388,16 @@ async def subscription_progress(db: AsyncSession, items: list[dict[str, Any]]) -
         unlimited = metadata.get("total_cycles") == 0
         if item["status"] in {"CANCELLED", "EXPIRED"}:
             remaining, unlimited = 0, False
+        recorded = charges.get(item["id"], [])
+        # Never combine currencies or infer collection from billing-cycle counts.
+        total = (
+            sum((amount for _, _, amount in recorded), Decimal(0))
+            if item["currency"] and all(currency == item["currency"] for currency, _, _ in recorded)
+            else None
+        )
         item.update(
-            charged_payments=counts.get(item["id"], 0),
+            charged_payments=sum(count for _, count, _ in recorded),
+            total_charged=total,
             remaining_payments=None if unlimited else remaining,
             payments_unlimited=unlimited,
         )

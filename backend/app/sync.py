@@ -73,6 +73,8 @@ async def refresh_subscription(db: AsyncSession, remote: str, paypal: PayPal) ->
     details = await paypal.request(
         "GET", "/v1/billing/subscriptions/" + provider_id(remote), params={"fields": "plan"}
     )
+    if details.get("id") != remote:
+        raise ReconciliationError("Provider subscription identity mismatch")
     if not details.get("plan", {}).get("billing_cycles"):
         raise ReconciliationError("Subscription effective plan was not returned")
     payment = await db.scalar(select(Payment).where(Payment.provider_id == remote))
@@ -209,7 +211,7 @@ async def import_reporting_item(db: AsyncSession, entry: dict[str, Any], paypal:
 async def synchronize(
     db: AsyncSession, data: SyncInput, paypal: PayPal, settings: Settings
 ) -> dict[str, Any]:
-    """Perform one requested resource or page; additional pages need explicit requests."""
+    """Read an explicit resource/window or all Active/Suspended subscription pages."""
     if not settings.paypal_configured:
         raise HTTPException(503, "PayPal configuration is incomplete")
     started = monotonic()
@@ -271,31 +273,48 @@ async def synchronize(
                 count += 1
         await db.commit()
     elif data.scope == "subscriptions":
-        await db.commit()
-        result = await paypal.request(
-            "GET", "/v1/billing/subscriptions", params={"page_size": 5, "page": data.page}
-        )
-        items = response_items(result, "subscriptions")
-        links = response_items(result, "links")
-        if any(not isinstance(link.get("rel"), str) for link in links):
-            raise ReconciliationError("Invalid subscription pagination links")
-        for index, entry in enumerate(items):
-            try:
-                await refresh_subscription(db, provider_id(entry.get("id")), paypal)
-                await db.commit()
-                count += 1
-            except ReconciliationError as error:
-                await db.rollback()
-                excluded += 1
-                log.debug(
-                    "synchronization_item_excluded scope=%s page=%s index=%s reason=%s",
-                    data.scope,
-                    data.page,
-                    index,
-                    error,
-                )
-        if any(link["rel"] == "next" for link in links):
-            next_page = data.page + 1
+        # One explicit import authorizes all matching pages in this request only.
+        # The route timeout bounds the operation; no task continues after timeout.
+        page = 1
+        seen: set[str] = set()
+        while True:
+            await db.commit()
+            result = await paypal.request(
+                "GET",
+                "/v1/billing/subscriptions",
+                params={"page_size": 20, "page": page, "statuses": "ACTIVE,SUSPENDED"},
+            )
+            items = response_items(result, "subscriptions")
+            links = response_items(result, "links")
+            if any(not isinstance(link.get("rel"), str) for link in links):
+                raise ReconciliationError("Invalid subscription pagination links")
+            for index, entry in enumerate(items):
+                try:
+                    remote = provider_id(entry.get("id"))
+                    if entry.get("status") not in {"ACTIVE", "SUSPENDED"}:
+                        excluded += 1
+                        continue
+                    if remote in seen:
+                        continue
+                    seen.add(remote)
+                    await refresh_subscription(db, remote, paypal)
+                    await db.commit()
+                    count += 1
+                except ReconciliationError as error:
+                    await db.rollback()
+                    excluded += 1
+                    log.debug(
+                        "synchronization_item_excluded scope=%s page=%s index=%s reason=%s",
+                        data.scope,
+                        page,
+                        index,
+                        error,
+                    )
+            if not any(link["rel"] == "next" for link in links):
+                break
+            if not items:
+                raise ReconciliationError("Empty subscription page has a next link")
+            page += 1
     else:
         start, end = window(data)
         await db.commit()
@@ -341,11 +360,16 @@ async def synchronize(
         state = SyncState(scope=data.scope)
         db.add(state)
     state.last_success = now()
+    coverage_note = (
+        "All returned Active/Suspended agreement pages read; installment history was not imported"
+        if data.scope == "subscriptions"
+        else "Only this resource/page was read; provider history may be incomplete"
+    )
     state.checkpoint = {
         "page": data.page,
         "next_page": next_page,
         "excluded": excluded,
-        "coverage_note": "Only this resource/page was read; provider history may be incomplete",
+        "coverage_note": coverage_note,
     }
     await db.commit()
     log.info(

@@ -96,6 +96,9 @@ nav button.active {
   gap: 8px;
   align-items: center;
 }
+.page-actions > button {
+  height: 42px;
+}
 .environment {
   text-transform: uppercase;
   font-size: 12px;

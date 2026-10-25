@@ -273,11 +273,17 @@ async def transaction(
         if request:
             row.client_name = request.client_name
             row.agreement_number = request.agreement_number
-    breakdown = resource.get("seller_receivable_breakdown", {})
+    breakdown = resource.get(
+        "seller_payable_breakdown" if kind == "refund" else "seller_receivable_breakdown", {}
+    )
     fee = breakdown.get("paypal_fee", resource.get("transaction_fee"))
+    if kind == "refund" and family == "sale":
+        fee = resource.get("refund_from_transaction_fee")
     net = breakdown.get("net_amount")
     if fee and fee.get("currency_code", fee.get("currency")) == currency:
-        row.fee = money(fee)
+        # Refund breakdown fees reduce the merchant's debit: store an explicit
+        # credit, never estimate it from the original fee or refund proportion.
+        row.fee = -money(fee) if kind == "refund" else money(fee)
     if net and net.get("currency_code") == currency:
         row.net = money(net)
     payer = resource.get("payer", {}).get("payer_info", resource.get("payer", {}))

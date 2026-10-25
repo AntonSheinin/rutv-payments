@@ -325,6 +325,36 @@ async def test_explicit_new_payment_does_not_reuse_failed_payment(
     assert collected["can_refund"]
 
 
+async def test_total_charged_uses_agreement_currency_without_combining_currencies(
+    sessions, client, headers
+):
+    """Successful sums stay separate; no recorded charges are zero, not a guessed cycle value."""
+    async with sessions() as db:
+        empty = Subscription(provider_id="I-EMPTY", status="ACTIVE", currency="ILS")
+        mixed = Subscription(provider_id="I-MIXED", status="SUSPENDED", currency="ILS")
+        usd = Subscription(provider_id="I-USD", status="ACTIVE", currency="USD")
+        db.add_all([empty, mixed, usd])
+        await db.flush()
+        for index, (sub, currency, amount) in enumerate(
+            [(mixed, "ILS", "10.00"), (mixed, "USD", "5.00"), (usd, "USD", "2.75")]
+        ):
+            await transaction(
+                db,
+                {
+                    "id": f"SUM-{index}",
+                    "status": "COMPLETED",
+                    "amount": {"value": amount, "currency_code": currency},
+                    "create_time": "2026-10-19T08:00:00Z",
+                },
+                "sale",
+                subscription_id=sub.id,
+            )
+        await db.commit()
+    rows = (await client.get("/api/v1/subscriptions", headers=headers)).json()["items"]
+    totals = {row["provider_id"]: row["total_charged"] for row in rows}
+    assert totals == {"I-EMPTY": "0.00", "I-MIXED": None, "I-USD": "2.75"}
+
+
 @pytest.mark.parametrize(
     "status,total,executions,remaining,unlimited",
     [
@@ -367,7 +397,10 @@ async def test_subscription_list_and_details_show_recorded_charges_and_remaining
                 {
                     "id": f"PROGRESS-{index}",
                     "status": raw,
-                    "amount": {"value": "10.00", "currency_code": "ILS"},
+                    "amount": {
+                        "value": "7.25" if index == 0 else "12.50" if index == 1 else "10.00",
+                        "currency_code": "ILS",
+                    },
                     "create_time": "2026-10-19T08:00:00Z",
                 },
                 "sale",
@@ -379,6 +412,7 @@ async def test_subscription_list_and_details_show_recorded_charges_and_remaining
     detail = (await client.get(f"/api/v1/subscriptions/{identifier}", headers=headers)).json()
     for row in [rows[0], detail]:
         assert row["charged_payments"] == 2
+        assert row["total_charged"] == "19.75"
         assert row["remaining_payments"] == remaining
         assert row["payments_unlimited"] is unlimited
     assert not provider["requests"]
