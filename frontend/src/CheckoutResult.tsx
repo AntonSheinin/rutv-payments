@@ -1,5 +1,7 @@
+import { errorMessage } from "./api";
 import { useEffect, useState } from "react";
-import { api, CheckoutResult as Result } from "./api";
+import { api } from "./api";
+import type { CheckoutResult as Result } from "./types";
 import { closeCheckout, storedSubmission } from "./checkout";
 import { Badge } from "./ui";
 
@@ -18,12 +20,12 @@ export function CheckoutResult({
   const [result, setResult] = useState<Result | null>(initial || null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(!initial);
-  async function load(initialReturn: boolean) {
+  async function load() {
     setBusy(true);
     setError("");
     try {
       const state = new URLSearchParams(location.search).get("state");
-      const identity = storedSubmission();
+      const identity = state ? null : storedSubmission();
       if (!state && !identity)
         throw new Error("No checkout submission is selected.");
       let item = await api<Result>(
@@ -32,10 +34,9 @@ export function CheckoutResult({
           : "/checkout-submissions/" + encodeURIComponent(identity!.intent),
       );
       if (
-        initialReturn &&
         state &&
         item.checkout_status === null &&
-        item.status === "awaiting_approval" &&
+        item.proof &&
         item.browser_state === "open"
       ) {
         const params = new URLSearchParams(location.search);
@@ -49,7 +50,6 @@ export function CheckoutResult({
           `/payments/${item.id}/checkout-outcome`,
           "POST",
           {
-            attempt_id: item.attempt_id,
             proof: state,
             outcome,
             provider_id:
@@ -65,13 +65,13 @@ export function CheckoutResult({
       // Remove callback secrets from the visible URL after the initial dispatch.
       history.replaceState(null, "", location.pathname);
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   }
   useEffect(() => {
-    if (!initial) void load(true);
+    if (!initial) void load();
   }, []);
   return (
     <section className="panel result-panel">
@@ -92,7 +92,7 @@ export function CheckoutResult({
             <p>
               {result.checkout_status === "success"
                 ? "PayPal approval was received."
-                : "Checkout was unsuccessful. This attempt is closed; start a new payment to try again."}
+                : "Checkout was unsuccessful. This checkout is closed; start a new payment to try again."}
             </p>
           </>
         )

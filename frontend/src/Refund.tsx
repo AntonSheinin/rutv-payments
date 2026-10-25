@@ -1,13 +1,15 @@
+import { errorMessage } from "./api";
+import type { RefundResult } from "./types";
+import type { Payment } from "./types";
 import { useRef, useState } from "react";
-import { api, dateLabel, Entity, money } from "./api";
-
+import { api, dateLabel, money } from "./api";
 /** One explicit confirmed amount; an uncertain response never enables a second send. */
 export function Refund({
   item,
   close,
   updated,
 }: {
-  item: Entity;
+  item: Payment;
   close: () => void;
   updated: () => void;
 }) {
@@ -15,7 +17,7 @@ export function Refund({
     [reason, setReason] = useState(""),
     [review, setReview] = useState(false),
     [busy, setBusy] = useState(false),
-    [result, setResult] = useState<Entity | null>(null),
+    [result, setResult] = useState<RefundResult | null>(null),
     [error, setError] = useState("");
   const submitted = useRef(false);
   const expired =
@@ -26,7 +28,7 @@ export function Refund({
     setBusy(true);
     setError("");
     try {
-      const result = await api<Entity>(
+      const result = await api<RefundResult>(
         `/transactions/${item.collection_id}/refunds`,
         "POST",
         { amount, reason },
@@ -35,7 +37,7 @@ export function Refund({
       setResult(result);
       updated();
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
       updated();
     } finally {
       setBusy(false);

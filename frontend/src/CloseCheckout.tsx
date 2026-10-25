@@ -1,14 +1,13 @@
+import { errorMessage } from "./api";
 import { useRef, useState } from "react";
-import { api, CheckoutResult } from "./api";
-
-export function CancelAttempt({
-  requestId,
-  attemptId,
+import { api } from "./api";
+import type { CheckoutResult } from "./types";
+export function CloseCheckout({
+  paymentId,
   updated,
   disabled = false,
 }: {
-  requestId: string;
-  attemptId: string;
+  paymentId: string;
   updated: (result: CheckoutResult) => void;
   disabled?: boolean;
 }) {
@@ -17,7 +16,7 @@ export function CancelAttempt({
   const sent = useRef(false);
   return (
     <div
-      className="attempt-cancellation"
+      className="checkout-cancellation"
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
     >
@@ -32,13 +31,13 @@ export function CancelAttempt({
           setError("");
           try {
             const result = await api<CheckoutResult>(
-              `/payments/${requestId}/attempts/${attemptId}/cancel`,
+              `/payments/${paymentId}/close`,
               "POST",
             );
             updated(result);
           } catch (error) {
             setError(
-              (error as Error).message +
+              errorMessage(error) +
                 " No automatic retry was made. Refresh the saved payment before taking another action.",
             );
           } finally {
@@ -46,7 +45,7 @@ export function CancelAttempt({
           }
         }}
       >
-        {busy ? "Cancelling attempt…" : "Cancel payment attempt"}
+        {busy ? "Closing checkout…" : "Close checkout"}
       </button>
       {error && (
         <p className="error" role="alert">

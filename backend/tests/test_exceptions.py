@@ -11,9 +11,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 @pytest.mark.parametrize(
     "payload", [[], {"name": "admin"}, {"name": "admin", "version": [], "csrf": "x"}]
 )
-def test_malformed_signed_sessions_return_401(client, application, payload):
+async def test_malformed_signed_sessions_return_401(client, application, payload):
     client.cookies.set("staff_session", application.state.session_signer.dumps(payload))
-    assert client.get("/api/v1/auth/me").status_code == 401
+    assert (await client.get("/api/v1/auth/me")).status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -42,7 +42,7 @@ async def test_invalid_successful_provider_responses_require_review(settings, co
 @pytest.mark.parametrize(
     "original,expected", [(UniqueViolation(), 409), (CheckViolation(), 500), (None, 503)]
 )
-def test_database_errors_are_classified_without_exposing_payloads(
+async def test_database_errors_are_classified_without_exposing_payloads(
     client, sessions, headers, monkeypatch, payment_logs, original, expected
 ):
     error = (
@@ -55,7 +55,7 @@ def test_database_errors_are_classified_without_exposing_payloads(
         raise error
 
     monkeypatch.setattr(sessions.class_, "scalar", fail)
-    response = client.get("/api/v1/transactions", headers=headers)
+    response = await client.get("/api/v1/transactions", headers=headers)
     assert response.status_code == expected
     assert "PRIVATE" not in response.text
     assert "database_" in payment_logs.text

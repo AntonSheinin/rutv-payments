@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from itsdangerous import BadData
+from itsdangerous import BadData, URLSafeTimedSerializer
 from pwdlib import PasswordHash
 
 from app.config import Settings, get_settings
-from app.schemas import LoginInput
+from app.models import Payment
+from app.schemas import LoginInput, SessionOptions, StaffSession
 
 password_hash = PasswordHash.recommended()
 log = logging.getLogger("payments.auth")
@@ -74,13 +75,27 @@ def authenticate(request: Request, settings: Config) -> Principal:
 User = Annotated[Principal, Depends(authenticate)]
 
 
+def session_response(user: Principal, settings: Settings) -> StaffSession:
+    """Assemble public session configuration without exposing provider credentials."""
+    return StaffSession(
+        name=user.name,
+        csrf=user.csrf,
+        options=SessionOptions(
+            environment=settings.paypal_environment,
+            paypal_configured=settings.paypal_configured,
+            paypal_client_id=settings.paypal_client_id,
+            maximum_amount=str(settings.maximum_amount),
+        ),
+    )
+
+
 @router.post("/login")
 def login(
     data: LoginInput,
     request: Request,
     response: Response,
     settings: Config,
-) -> Principal:
+) -> StaffSession:
     """Authenticate staff and issue a signed, HttpOnly session with a separate CSRF token."""
     if request.headers.get("origin") not in settings.allowed_origins:
         log.warning("staff_login_rejected reason=invalid_origin")
@@ -117,13 +132,13 @@ def login(
         path="/",
     )
     log.info("staff_login_succeeded")
-    return Principal(data.username, csrf)
+    return session_response(Principal(data.username, csrf), settings)
 
 
 @router.get("/me")
-def me(user: User) -> Principal:
-    """Return the authenticated staff identity and browser CSRF token."""
-    return user
+def me(user: User, settings: Config) -> StaffSession:
+    """Return identity, CSRF and public configuration in one authenticated read."""
+    return session_response(user, settings)
 
 
 @router.post("/logout", dependencies=[Depends(authenticate)])
@@ -132,3 +147,8 @@ def logout(response: Response) -> dict[str, bool]:
     response.delete_cookie("staff_session", path="/")
     log.info("staff_logout")
     return {"ok": True}
+
+
+def checkout_proof(signer: URLSafeTimedSerializer, payment: Payment) -> str:
+    """Sign the exact payment and initiating operator without a child identity."""
+    return signer.dumps({"payment": payment.id, "actor": payment.actor})

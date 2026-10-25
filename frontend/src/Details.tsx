@@ -1,9 +1,11 @@
+import type { SyncInput, ResourceView } from "./types";
+import type { WorkspaceRecord } from "./types";
 import { useRef, useState } from "react";
-import { api, dateLabel, Entity, localTimezone, money } from "./api";
+import { dateLabel, money } from "./api";
 import { Pagination } from "./Pagination";
 import { Records } from "./Records";
-import { Badge, labels, SubscriptionCancellationNotice, View } from "./ui";
-import { CancelAttempt } from "./CancelAttempt";
+import { Badge, labels, SubscriptionCancellationNotice } from "./ui";
+import { CloseCheckout } from "./CloseCheckout";
 
 export function Details({
   item,
@@ -15,46 +17,32 @@ export function Details({
   busy,
   requestError,
   close,
-  run,
+  synchronize,
+  cancelSubscription,
   updated,
 }: {
-  item: Entity;
+  item: WorkspaceRecord;
   loading: boolean;
   loadError: string;
-  onPageChange: (kind: "attempts" | "history", page: number) => void;
-  onPageSizeChange: (kind: "attempts" | "history", size: number) => void;
-  type: View;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  type: ResourceView;
   busy: boolean;
   requestError: string;
   close: () => void;
-  run: (path: string, data: unknown) => Promise<boolean>;
+  synchronize: (data: SyncInput) => Promise<boolean>;
+  cancelSubscription: (id: string, reason: string) => Promise<boolean>;
   updated: () => void;
 }) {
-  const [client, setClient] = useState(item.client_name || ""),
-    [agreement, setAgreement] = useState(item.agreement_number || ""),
-    [reason, setReason] = useState(""),
+  const [reason, setReason] = useState(""),
     [cancel, setCancel] = useState(false),
-    [error, setError] = useState(""),
     [from, setFrom] = useState(""),
     [through, setThrough] = useState("");
   const sent = useRef(false);
-  async function associate() {
-    try {
-      await api(`/${type}/${item.id}/association`, "PATCH", {
-        client_name: client,
-        agreement_number: agreement,
-      });
-      updated();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  const scope =
-    type === "payments"
-      ? "payment"
-      : type === "subscriptions"
-        ? "subscription"
-        : "transaction";
+  const payment = "is_subscription" in item ? item : null;
+  const subscription = "charged_payments" in item ? item : null;
+  const history = "transactions" in item ? item.transactions : null;
+  const scope = type === "payments" ? "payment" : "subscription";
   return (
     <div className="modal-backdrop">
       <section
@@ -85,109 +73,82 @@ export function Details({
         ) : (
           <div className="detail-body">
             <div className="detail-amount">
-              {money(item.amount || item.price_per_period, item.currency)}{" "}
+              {money(item.amount, item.currency)}{" "}
               <Badge status={item.checkout_status ?? item.status} />
             </div>
             <dl>
               <dt>PayPal / financial status</dt>
-              <dd>{item.status?.replaceAll("_", " ")}</dd>
+              <dd>{item.status.replaceAll("_", " ")}</dd>
               <dt>Agreement number</dt>
               <dd>{item.agreement_number || "Unassociated"}</dd>
               <dt>Local ID</dt>
               <dd className="mono">{item.id}</dd>
               <dt>Provider ID</dt>
-              <dd>{item.provider_id || "See attempts below"}</dd>
+              <dd>{item.provider_id || "Not available"}</dd>
               <dt>Last verified</dt>
               <dd>{dateLabel(item.last_synced_at)}</dd>
               {type === "subscriptions" && (
                 <>
                   <dt>Charged payments (recorded)</dt>
-                  <dd>{item.charged_payments ?? "Not available"}</dd>
+                  <dd>{subscription?.charged_payments ?? "Not available"}</dd>
                   <dt>Remaining payments</dt>
                   <dd>
-                    {item.payments_unlimited
+                    {subscription?.payments_unlimited
                       ? "Until cancelled"
-                      : (item.remaining_payments ?? "Not available")}
+                      : (subscription?.remaining_payments ?? "Not available")}
                   </dd>
                 </>
               )}
-              {item.next_billing_at && (
+              {subscription?.next_billing_at && (
                 <>
                   <dt>Next billing</dt>
-                  <dd>{dateLabel(item.next_billing_at)}</dd>
+                  <dd>{dateLabel(subscription.next_billing_at)}</dd>
                 </>
               )}
-              {item.fee !== undefined && (
+              {payment?.fee !== undefined && (
                 <>
                   <dt>Provider fee</dt>
-                  <dd>{money(item.fee, item.currency)}</dd>
+                  <dd>{money(payment.fee, item.currency)}</dd>
                 </>
               )}
-              {item.outstanding != null && (
+              {subscription?.outstanding != null && (
                 <>
                   <dt>Outstanding</dt>
-                  <dd>{money(item.outstanding, item.currency)}</dd>
+                  <dd>{money(subscription.outstanding, item.currency)}</dd>
                 </>
               )}
             </dl>
-            {item.comments && (
+            {payment?.comments && (
               <div className="internal-note">
                 <strong>Internal comments</strong>
-                <p>{item.comments}</p>
+                <p>{payment.comments}</p>
               </div>
             )}
-            {!!item.attempts?.total && (
-              <section aria-label="Payment attempts">
-                <h3>Payment attempts</h3>
-                {item.attempts.items.map((a) => (
-                  <div className="checkout-item" key={a.id}>
-                    <Badge status={a.checkout_status ?? "in progress"} />
-                    <span>{dateLabel(a.created_at)}</span>
-                    <span>
-                      {a.provider_id || "Provider identity unconfirmed"}
-                    </span>
-                    <small>{a.error}</small>
-                    {a.can_cancel && (
-                      <CancelAttempt
-                        requestId={item.id}
-                        attemptId={a.id}
-                        updated={updated}
-                        disabled={busy}
-                      />
-                    )}
-                  </div>
-                ))}
-                <Pagination
-                  page={item.attempts.page}
-                  pageSize={item.attempts.page_size}
-                  total={item.attempts.total}
-                  label="Payment attempts"
-                  disabled={busy}
-                  onPageChange={(page) => onPageChange("attempts", page)}
-                  onPageSizeChange={(size) =>
-                    onPageSizeChange("attempts", size)
-                  }
-                />
-              </section>
+            {type === "payments" && payment?.can_close && (
+              <CloseCheckout
+                paymentId={item.id}
+                updated={updated}
+                disabled={busy}
+              />
             )}
             {((type === "subscriptions" &&
-              ["APPROVAL_PENDING", "APPROVED"].includes(item.status || "")) ||
-              (item.is_subscription &&
-                ["awaiting_approval", "pending", "unknown"].includes(
-                  item.status || "",
-                ))) && <SubscriptionCancellationNotice />}
+              ["APPROVAL_PENDING", "APPROVED"].includes(item.status)) ||
+              (payment?.is_subscription &&
+                ["pending", "failed"].includes(item.status))) && (
+              <SubscriptionCancellationNotice />
+            )}
             <div className="detail-actions">
               <button
                 className="secondary"
                 disabled={busy}
                 onClick={() =>
-                  void run("/synchronizations", { scope, resource_id: item.id })
+                  void synchronize({ scope, resource_id: item.id })
                 }
               >
                 Refresh from PayPal (read-only)
               </button>
               {type === "subscriptions" &&
-                ["ACTIVE", "SUSPENDED"].includes(item.status || "") && (
+                ["ACTIVE", "SUSPENDED"].includes(item.status) && (
                   <button className="danger" onClick={() => setCancel(true)}>
                     Cancel subscription
                   </button>
@@ -198,10 +159,10 @@ export function Details({
                 className="advanced"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  void run("/synchronizations", {
+                  void synchronize({
                     scope: "subscription",
                     resource_id: item.id,
-                    timezone: localTimezone(),
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                     start_date: from,
                     end_date: through,
                   });
@@ -241,7 +202,7 @@ export function Details({
                   e.preventDefault();
                   if (sent.current) return;
                   sent.current = true;
-                  void run(`/subscriptions/${item.id}/cancel`, { reason });
+                  void cancelSubscription(item.id, reason);
                 }}
               >
                 <label>
@@ -262,54 +223,23 @@ export function Details({
                 </button>
               </form>
             )}
-            {["payments", "subscriptions"].includes(type) && (
-              <div className="reference-form">
-                <label>
-                  Client name
-                  <input
-                    value={client}
-                    maxLength={255}
-                    onChange={(e) => setClient(e.target.value)}
-                  />
-                </label>
-                <label>
-                  Agreement number
-                  <input
-                    value={agreement}
-                    maxLength={255}
-                    onChange={(e) => setAgreement(e.target.value)}
-                  />
-                </label>
-                <button
-                  className="secondary"
-                  disabled={!client.trim() || !agreement.trim()}
-                  onClick={() => void associate()}
-                >
-                  Save association
-                </button>
-              </div>
-            )}
-            {(error || requestError) && (
+            {requestError && (
               <p className="error" role="alert">
-                {error || requestError}
+                {requestError}
               </p>
             )}
-            {!!item.transactions?.total && (
+            {history && history.total > 0 && (
               <>
                 <h3>Financial history</h3>
-                <Records
-                  view="ledger"
-                  busy={false}
-                  items={item.transactions.items}
-                />
+                <Records view="ledger" busy={false} items={history.items} />
                 <Pagination
-                  page={item.transactions.page}
-                  pageSize={item.transactions.page_size}
-                  total={item.transactions.total}
+                  page={history.page}
+                  pageSize={history.page_size}
+                  total={history.total}
                   label="Financial history"
                   disabled={busy}
-                  onPageChange={(page) => onPageChange("history", page)}
-                  onPageSizeChange={(size) => onPageSizeChange("history", size)}
+                  onPageChange={onPageChange}
+                  onPageSizeChange={onPageSizeChange}
                 />
               </>
             )}

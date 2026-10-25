@@ -7,27 +7,34 @@ End users never access this service. Card entry and guest checkout belong on
 PayPal-hosted pages or PayPal-controlled frames; never collect or store card data.
 
 - Backend: Python 3.14, FastAPI, SQLAlchemy, Alembic and PostgreSQL 17.
+- Payments own checkout state/correlation; there is no separate payment-attempt model, table or API identifier.
 - Frontend: React, TypeScript and Vite, under `frontend/`.
 - Python dependencies: `pyproject.toml` and `uv.lock`. Use uv, not pip or requirements files.
 - Deployment: `docker-compose.yml` contains only `api` and `db`.
+- The service runs only in Linux Docker containers on Ubuntu, started with Docker Compose.
+- Do not add native launchers or platform-specific runtime/test branches.
 - FastAPI startup acquires singleton database ownership and applies migrations.
   Financial actions execute directly within requests. Run one Uvicorn process.
   No background worker, polling, scheduled retries or startup replay.
 - The image serves the built frontend and runs as `payments:payments`, UID/GID 10001.
 
-Read `README.md` for setup, `PLAN.md` for product rules,
-`docs/OPERATIONS.md` for uncertain-outcome semantics and `docs/INTEGRATION.md` for
+Read `README.md` for setup and product rules,
+`docs/OPERATIONS.md` for financial/uncertain-outcome semantics and `docs/INTEGRATION.md` for
 merchant-specific verification still required. Record material verification
 results in `docs/VERIFICATION.md` without claiming mocked tests prove live behavior.
 
 ## Code organization and style
 
-- `backend/app/main.py`: HTTP routes, application lifecycle and shared resources.
-- `auth.py`, `schemas.py`, `services.py`: authentication, validation and business rules.
-- `paypal.py`, `normalize.py`, `sync.py`: provider HTTP, verified financial facts and explicit bounded reads.
-- `models.py`, `db.py`, `storage.py`: persistence, migrations and environment ownership.
-- `reporting.py`, `serialization.py`: search, statistics and API representations.
-- `backend/migrations/`: versioned schema changes; `backend/tests/`: backend tests.
+- `backend/app/main.py`: application composition, HTTP security/error boundaries and static/private system routes.
+- `lifecycle.py`, `db.py`: async resources, migrations, request sessions and singleton ownership.
+- `routes/payments.py`, `routes/subscriptions.py`, `routes/reporting.py`: authenticated contracts and local read assembly.
+- `auth.py`, `schemas.py`, `responses.py`: authentication, input policies and explicit public response contracts.
+- `checkout.py`, `refunds.py`, `subscriptions.py`: cohesive direct financial workflows.
+- `paypal.py`, `verification.py`, `normalize.py`, `sync.py`: provider HTTP, verified financial facts and explicit bounded reads.
+- `models.py`, `storage.py`, `reporting.py`: persistence, durable identities/audit and local search/statistics.
+- `backend/migrations/`: versioned schema changes; `backend/tests/`: async application tests and synchronous migration tooling.
+- `frontend/src/App.tsx`, `Navigation.tsx`: workspace composition and navigation; `main.tsx` only mounts the app.
+- `useCheckout.ts`, `useWorkspace.ts`, `types.ts`: feature state and concrete public contracts; `styles/` preserves the existing cascade.
 
 Prefer small, direct changes using existing code paths. Avoid speculative
 abstractions, duplicate validation and unrelated refactors. Add complete type hints
@@ -77,9 +84,9 @@ starts with `payments_test`, configured through `TEST_DATABASE_URL`; never point
 tests at the application database. See `backend/tests/conftest.py` for the default.
 
 From `frontend/`, run `npm ci`, `npm run build` and `npm run format:check`.
-Use `npm.cmd` on Windows PowerShell if required. Browser tests use `npm test` and
+Browser tests use `npm test` and
 require Chromium, a running local application and the configured local test login;
-see `frontend/playwright.config.ts` and `frontend/tests/staff.spec.ts`.
+see `frontend/playwright.config.ts` and `frontend/tests/fixtures.ts`.
 
 For persistence changes, verify Alembic upgrade and schema comparison against a
 dedicated database. For deployment changes, build and smoke-test the container and

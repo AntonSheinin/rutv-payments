@@ -2,6 +2,27 @@
 
 Changes are grouped by commit date, newest first.
 
+## 2026-10-25 — Payment and API simplification
+
+### Changed
+
+- Payments now own their checkout state directly; removed the separate payment-attempt table while preserving existing financial identities through migrations.
+- Close checkout is the single local checkout-ending action. Removed the redundant payment-cancellation and options endpoints; login/session responses include public configuration.
+- Unconfirmed financial outcomes display Failed while unresolved refund and cancellation reservations remain protected against duplicate actions.
+- Database requests run asynchronously, keeping unrelated staff requests responsive during database waits. Public API responses explicitly expose supported fields.
+- The service runs exclusively through Docker Compose on Linux. Removed native startup support, completed plans, obsolete logs and redundant tests; reorganized workflows, UI code and styles.
+
+### Fixed
+
+- Signed checkout returns work independently of malformed tab storage. Returning to Dashboard restores its default URL so reloading keeps the dashboard open.
+- Interrupted subscription cancellations return Failed instead of exposing an internal dispatch state, preserve their reservation and retain provider support diagnostics.
+- Financial activity and synchronization logs include useful result/reservation context without repeating terminal events or exposing customer data and credentials.
+
+### Verification
+
+- 169 backend tests passed in Linux Docker; 43 browser tests passed. Lint, formatting, type checks, frontend/container builds and migration/schema checks passed.
+- Financial tests use mocked provider responses; remaining merchant-specific verification is documented in [integration](docs/INTEGRATION.md).
+
 ## 2026-10-23 — Initial commit
 
 This repository had no earlier project commits when this changelog was created.

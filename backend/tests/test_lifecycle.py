@@ -1,5 +1,6 @@
 """Single-process lifecycle without background payment tasks or startup replay."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -8,18 +9,16 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from app.db import migrate_database
-from app.main import lifespan
+from app.lifecycle import lifespan
 from app.models import Base
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, inspect, text
 
 
-def test_startup_no_worker_and_loss_of_ownership_blocks_mutations(client, headers, provider):
-    assert not hasattr(client.app.state, "processing_task")
+async def test_startup_no_worker_and_loss_of_ownership_blocks_mutations(client, headers, provider):
     assert provider["requests"] == []
-    client.app.state.ownership.invalidate()
-    response = client.post(
+    await client.app.state.ownership.invalidate()
+    response = await client.post(
         "/api/v1/payments",
         headers=headers,
         json={
@@ -32,32 +31,36 @@ def test_startup_no_worker_and_loss_of_ownership_blocks_mutations(client, header
     )
     assert response.status_code == 503
     assert not provider["requests"]
-    assert client.get("/api/v1/payments", headers=headers).status_code == 200
+    assert (await client.get("/api/v1/payments", headers=headers)).status_code == 200
 
 
-def test_singleton_and_shutdown_release_ownership(application):
-    with TestClient(application) as first:
+async def test_singleton_and_shutdown_release_ownership(application):
+    async with application.router.lifespan_context(application):
+        owner = application.state.ownership
         with pytest.raises(RuntimeError, match="Another service"):
-            with TestClient(FastAPI(lifespan=lifespan)):
+            other = FastAPI(lifespan=lifespan)
+            async with other.router.lifespan_context(other):
                 pass
-        assert not first.app.state.ownership.closed
-    assert first.app.state.ownership.closed
+        assert not owner.closed
+    assert owner.closed
 
 
-def test_clean_migration_matches_target_schema(sessions):
-    engine = sessions.kw["bind"]
+def test_clean_migration_matches_target_schema(migration_sessions):
+    engine = migration_sessions.kw["bind"]
     metadata = MetaData()
     metadata.reflect(engine)
     metadata.drop_all(engine)
-    migrate_database(engine)
+    with engine.begin() as migration:
+        migrate_database(migration)
+    with engine.begin() as migration:
+        migrate_database(migration)
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
-    migrate_database(engine)
 
 
-def test_populated_payment_migration_preserves_ids_and_splits_installments(sessions):
+def test_populated_payment_migration_preserves_ids_and_splits_installments(migration_sessions):
     """Upgrade actual previous-schema records without losing checkout or ledger identities."""
-    engine = sessions.kw["bind"]
+    engine = migration_sessions.kw["bind"]
     metadata = MetaData()
     metadata.reflect(engine)
     metadata.drop_all(engine)
@@ -149,17 +152,21 @@ def test_populated_payment_migration_preserves_ids_and_splits_installments(sessi
         command.upgrade(config, "head")
         assert (
             connection.scalar(
-                text("SELECT checkout_status FROM payment_attempts WHERE id='open-attempt'")
+                text(
+                    "SELECT checkout_status FROM payments WHERE provider_correlation='open-attempt'"
+                )
             )
             == "failed"
         )
         assert (
             connection.scalar(
-                text("SELECT browser_state FROM payment_attempts WHERE id='open-attempt'")
+                text("SELECT browser_state FROM payments WHERE provider_correlation='open-attempt'")
             )
             == "closed"
         )
-        assert "payment_requests" not in inspect(connection).get_table_names()
+        assert not {"payment_requests", "payment_attempts"} & set(
+            inspect(connection).get_table_names()
+        )
         assert connection.scalar(text("SELECT count(*) FROM payments")) == 6
         assert connection.scalar(text("SELECT count(*) FROM transactions")) == 8
         assert (
@@ -172,10 +179,12 @@ def test_populated_payment_migration_preserves_ids_and_splits_installments(sessi
         )
         assert (
             connection.scalar(text("SELECT status FROM payments WHERE id='open-payment'"))
-            == "awaiting_approval"
+            == "failed"
         )
         assert (
-            connection.scalar(text("SELECT status FROM payment_attempts WHERE id='sub-attempt'"))
+            connection.scalar(
+                text("SELECT status FROM payments WHERE provider_correlation='sub-attempt'")
+            )
             == "cancelled"
         )
         assert (
@@ -193,6 +202,156 @@ def test_populated_payment_migration_preserves_ids_and_splits_installments(sessi
             == 2
         )
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
-    with engine.connect() as connection:
+    with engine.begin() as migration:
+        migrate_database(migration)
+
+
+def test_result_status_migration_preserves_financial_reservations(migration_sessions):
+    """Retired labels collapse without releasing unresolved refund/cancel claims."""
+    engine = migration_sessions.kw["bind"]
+    metadata = MetaData()
+    metadata.reflect(engine)
+    metadata.drop_all(engine)
+    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    timestamp = datetime.now(UTC)
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "f72b38a015d9")
+        metadata = MetaData()
+        metadata.reflect(connection)
+        common = {"created_at": timestamp, "updated_at": timestamp}
+        for identifier, status in [("open", "awaiting_approval"), ("lost", "unknown")]:
+            connection.execute(
+                metadata.tables["payments"].insert(),
+                {
+                    **common,
+                    "id": identifier,
+                    "status": status,
+                    "price_per_period": 100,
+                    "currency": "ILS",
+                    "is_subscription": False,
+                    "comments": "",
+                    "origin": "created_here",
+                },
+            )
+            connection.execute(
+                metadata.tables["payment_attempts"].insert(),
+                {
+                    **common,
+                    "id": identifier,
+                    "payment_id": identifier,
+                    "status": status,
+                    "actor": "migration",
+                    "submission_key": identifier,
+                    "input_hash": "hash",
+                    "terms": {"first_name": "Migration", "last_name": "Client"},
+                    "provider_id": "ORDER-" + identifier,
+                    "phase": "created" if identifier == "open" else "create_dispatched",
+                    "browser_state": "open" if identifier == "open" else "closed",
+                },
+            )
+        for status in ("unknown", "pending", "failed", "completed"):
+            connection.execute(
+                metadata.tables["transactions"].insert(),
+                {
+                    **common,
+                    "id": status,
+                    "provider_id": status,
+                    "api_family": "capture",
+                    "kind": "refund",
+                    "status": status,
+                    "provider_status": "UNCONFIRMED" if status == "unknown" else status.upper(),
+                    "amount": 10,
+                    "currency": "ILS",
+                    "origin": "created_here",
+                    "effective_at": timestamp,
+                    "last_synced_at": timestamp,
+                },
+            )
+        for status in ("unknown", "pending", "failed", "completed", "reserved", "dispatched"):
+            connection.execute(
+                metadata.tables["financial_actions"].insert(),
+                {
+                    **common,
+                    "id": status,
+                    "actor": "migration",
+                    "scope": "cancel:subscription",
+                    "submission_key": status,
+                    "input_hash": "hash",
+                    "resource_id": "subscription",
+                    "status": status,
+                },
+            )
+        # Older schemas allowed several checkout children; every historical
+        # checkout must survive independently without moving existing ledger facts.
+        connection.execute(
+            metadata.tables["payment_attempts"].insert(),
+            {
+                **common,
+                "id": "earlier",
+                "payment_id": "open",
+                "status": "failed",
+                "actor": "migration",
+                "submission_key": "earlier",
+                "input_hash": "earlier-hash",
+                "provider_id": "EARLIER-ORDER",
+                "terms": {"first_name": "Earlier", "last_name": "Client"},
+                "phase": "finished",
+                "browser_state": "closed",
+                "checkout_status": "failed",
+            },
+        )
+        connection.execute(
+            metadata.tables["audit_events"].insert(),
+            {
+                **common,
+                "id": "checkout-audit",
+                "actor": "migration",
+                "action": "checkout.submitted",
+                "resource_id": "earlier",
+                "details": {},
+            },
+        )
+        command.upgrade(config, "head")
+        assert "payment_attempts" not in inspect(connection).get_table_names()
+        assert dict(
+            connection.execute(
+                text("SELECT id, status FROM payments WHERE id IN ('open', 'lost')")
+            ).all()
+        ) == {
+            "open": "pending",
+            "lost": "failed",
+        }
+        earlier = connection.execute(
+            text(
+                "SELECT id, first_name, provider_id, submission_key FROM payments "
+                "WHERE provider_correlation='earlier'"
+            )
+        ).one()
+        assert earlier.first_name == "Earlier" and earlier.provider_id == "EARLIER-ORDER"
+        assert earlier.submission_key == "earlier"
+        assert connection.scalar(text("SELECT count(*) FROM payments")) == 3
+        assert (
+            connection.scalar(
+                text("SELECT resource_id FROM audit_events WHERE id='checkout-audit'")
+            )
+            == earlier.id
+        )
+        assert (
+            connection.scalar(text("SELECT provider_id FROM payments WHERE id='open'"))
+            == "ORDER-open"
+        )
+        refunds = connection.execute(
+            text("SELECT id, status, reservation_active FROM transactions")
+        ).all()
+        assert {identifier: (status, reserved) for identifier, status, reserved in refunds} == {
+            "unknown": ("failed", True),
+            "pending": ("pending", True),
+            "failed": ("failed", False),
+            "completed": ("completed", False),
+        }
+        active = connection.scalars(
+            text("SELECT id FROM financial_actions WHERE reservation_active")
+        ).all()
+        assert set(active) == {"unknown", "pending", "reserved", "dispatched"}
         assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
-    migrate_database(engine)

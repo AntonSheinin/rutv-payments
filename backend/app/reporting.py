@@ -6,16 +6,16 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal, Self
 from typing import cast as type_cast
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import Select, SQLColumnExpression, String, cast, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models import Attempt, Payment, Subscription, SyncState, Transaction
-from app.schemas import Currency
-from app.serialization import record
+from app.models import Payment, Subscription, SyncState, Transaction
+from app.responses import CoverageResponse, PaymentRecord, SubscriptionResponse, TransactionResponse
+from app.schemas import Currency, Timezone
 
 log = logging.getLogger("payments.reporting")
 
@@ -37,7 +37,7 @@ class Filters(BaseModel):
     end_date: date | None = None
     min_amount: Decimal | None = Field(default=None, ge=0)
     max_amount: Decimal | None = Field(default=None, ge=0)
-    timezone: str = "UTC"
+    timezone: Timezone = "UTC"
     page: int = Field(default=1, ge=1, le=100000)
     page_size: int = Field(default=25, ge=1, le=100)
     sort: Literal["date_desc", "date_asc", "amount_desc", "amount_asc"] = "date_desc"
@@ -46,10 +46,6 @@ class Filters(BaseModel):
     @model_validator(mode="after")
     def ranges(self) -> Self:
         """Validate calendar, amount and timezone bounds before constructing SQL."""
-        try:
-            ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError, ValueError:
-            raise ValueError("Unknown timezone") from None
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValueError("Invalid date range")
         if (
@@ -134,37 +130,23 @@ def filtered[T: (Payment, Subscription, Transaction)](
                 .correlate(Payment)
                 .exists()
             )
-            matches.append(
-                select(Attempt.id)
-                .where(
-                    Attempt.payment_id == Payment.id,
-                    Attempt.provider_id.icontains(f.q, autoescape=True),
-                )
-                .exists()
-            )
+            matches.append(Payment.provider_id.icontains(f.q, autoescape=True))
         result.append(or_(*matches))
     if f.checkout_status:
         if model is Payment:
-            latest_outcome = (
-                select(Attempt.checkout_status)
-                .where(Attempt.payment_id == Payment.id)
-                .order_by(Attempt.created_at.desc(), Attempt.id.desc())
-                .limit(1)
-                .scalar_subquery()
-            )
-            result.append(latest_outcome == f.checkout_status)
+            result.append(Payment.checkout_status == f.checkout_status)
         elif model is Subscription:
             result.append(
-                select(Attempt.id)
+                select(Payment.id)
                 .where(
-                    Attempt.provider_id == Subscription.provider_id,
-                    Attempt.checkout_status == f.checkout_status,
+                    Payment.provider_id == Subscription.provider_id,
+                    Payment.checkout_status == f.checkout_status,
                 )
                 .exists()
             )
     if f.currency:
         result.append(model.currency == f.currency)
-    if f.status and hasattr(model, "status"):
+    if f.status:
         result.append(model.status == f.status)
     if f.kind and model is Transaction:
         result.append(Transaction.kind == f.kind)
@@ -177,7 +159,7 @@ def filtered[T: (Payment, Subscription, Transaction)](
             result.append(
                 Payment.status == "reversed" if f.kind == "reversal" else Payment.id.is_(None)
             )
-    if f.origin and hasattr(model, "origin"):
+    if f.origin:
         result.append(model.origin == f.origin)
     if f.min_amount is not None:
         result.append(amount >= f.min_amount)
@@ -208,20 +190,30 @@ def filtered[T: (Payment, Subscription, Transaction)](
     return statement.where(*result), date_field, amount
 
 
-def listing[T: (Payment, Subscription, Transaction)](
-    db: Session, model: type[T], f: Filters
+async def listing[T: (Payment, Subscription, Transaction)](
+    db: AsyncSession, model: type[T], f: Filters
 ) -> dict[str, Any]:
     """Count and page the same snapshot, returning resolved client/agreement references."""
     if not db.in_transaction():
-        db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        await db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
     statement, date_field, amount = filtered(model, f)
     column = amount if f.sort.startswith("amount") else date_field
     ordering = column.asc() if f.sort.endswith("asc") else column.desc()
-    total = db.scalar(select(func.count()).select_from(statement.subquery()))
+    total = await db.scalar(select(func.count()).select_from(statement.subquery()))
     statement = (
         statement.order_by(ordering, model.id).offset((f.page - 1) * f.page_size).limit(f.page_size)
     )
-    items = [record(row) for row in db.scalars(statement)]
+    response_type: type[BaseModel] = (
+        PaymentRecord
+        if model is Payment
+        else TransactionResponse
+        if model is Transaction
+        else SubscriptionResponse
+    )
+    items = [
+        response_type.model_validate(row).model_dump(mode="json")
+        for row in (await db.scalars(statement))
+    ]
     log.debug(
         "records_listed model=%s page=%s page_size=%s total=%s",
         model.__name__,
@@ -237,22 +229,24 @@ def listing[T: (Payment, Subscription, Transaction)](
     }
 
 
-def statistics(db: Session, f: Filters, environment: str) -> dict[str, Any]:
+async def statistics(db: AsyncSession, f: Filters, environment: str) -> dict[str, Any]:
     """Aggregate all matches per currency; missing fees remain explicitly unknown."""
     if not db.in_transaction():
-        db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        await db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
     statement, _, _ = filtered(Transaction, f)
     source = statement.subquery()
-    rows = db.execute(
-        select(
-            source.c.currency,
-            source.c.kind,
-            source.c.status,
-            func.count().label("count"),
-            func.sum(source.c.amount).label("amount"),
-            func.sum(source.c.fee).label("fee"),
-            func.count(source.c.fee).label("fee_count"),
-        ).group_by(source.c.currency, source.c.kind, source.c.status)
+    rows = (
+        await db.execute(
+            select(
+                source.c.currency,
+                source.c.kind,
+                source.c.status,
+                func.count().label("count"),
+                func.sum(source.c.amount).label("amount"),
+                func.sum(source.c.fee).label("fee"),
+                func.count(source.c.fee).label("fee_count"),
+            ).group_by(source.c.currency, source.c.kind, source.c.status)
+        )
     ).all()
     result: dict[str, Any] = {}
     # Aggregation columns come from a dynamic subquery; declare its selected row layout.
@@ -299,11 +293,15 @@ def statistics(db: Session, f: Filters, environment: str) -> dict[str, Any]:
         )
         totals["known_fees"] = totals.pop("fees")
     bucket = func.date_trunc(f.bucket, func.timezone(f.timezone, source.c.effective_at))
-    trends = db.execute(
-        select(cast(bucket, String), source.c.currency, source.c.kind, func.sum(source.c.amount))
-        .where(source.c.status == "completed")
-        .group_by(bucket, source.c.currency, source.c.kind)
-        .order_by(bucket)
+    trends = (
+        await db.execute(
+            select(
+                cast(bucket, String), source.c.currency, source.c.kind, func.sum(source.c.amount)
+            )
+            .where(source.c.status == "completed")
+            .group_by(bucket, source.c.currency, source.c.kind)
+            .order_by(bucket)
+        )
     ).all()
     # Current subscription counts are independent of transaction date/status filters.
     sub_query = select(Subscription.status, func.count()).group_by(Subscription.status)
@@ -325,10 +323,12 @@ def statistics(db: Session, f: Filters, environment: str) -> dict[str, Any]:
         "trends": [
             {"date": d, "currency": c, "kind": k, "amount": str(a)} for d, c, k, a in trends
         ],
-        "current_subscriptions": dict(db.execute(sub_query).all()),
+        "current_subscriptions": dict((await db.execute(sub_query)).all()),
         "coverage": [
-            record(s)
-            for s in db.scalars(select(SyncState).where(SyncState.scope != "database_identity"))
+            CoverageResponse.model_validate(s).model_dump(mode="json")
+            for s in (
+                await db.scalars(select(SyncState).where(SyncState.scope != "database_identity"))
+            )
         ],
         "scope": "Records created or imported into this service; coverage may be incomplete",
         "timezone": f.timezone,
@@ -337,26 +337,30 @@ def statistics(db: Session, f: Filters, environment: str) -> dict[str, Any]:
     }
 
 
-def subscription_progress(db: Session, items: list[dict[str, Any]]) -> None:
+async def subscription_progress(db: AsyncSession, items: list[dict[str, Any]]) -> None:
     """Add recorded collections and provider-reported future regular installments."""
     if not items:
         return
     counts = {
         identifier: count
-        for identifier, count in db.execute(
-            select(Transaction.subscription_id, func.count())
-            .where(
-                Transaction.subscription_id.in_([item["id"] for item in items]),
-                Transaction.kind == "collection",
-                Transaction.status == "completed",
+        for identifier, count in (
+            await db.execute(
+                select(Transaction.subscription_id, func.count())
+                .where(
+                    Transaction.subscription_id.in_([item["id"] for item in items]),
+                    Transaction.kind == "collection",
+                    Transaction.status == "completed",
+                )
+                .group_by(Transaction.subscription_id)
             )
-            .group_by(Transaction.subscription_id)
         ).all()
     }
     outcomes = dict(
-        db.execute(
-            select(Attempt.provider_id, Attempt.checkout_status).where(
-                Attempt.provider_id.in_([item["provider_id"] for item in items])
+        (
+            await db.execute(
+                select(Payment.provider_id, Payment.checkout_status).where(
+                    Payment.provider_id.in_([item["provider_id"] for item in items])
+                )
             )
         ).all()
     )

@@ -14,3 +14,5 @@ frontend/playwright-report
 backend/tests
 **/*.egg-info
 *.db
+*.log
+**/*.tsbuildinfo

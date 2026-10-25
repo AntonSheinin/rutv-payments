@@ -6,13 +6,21 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ReconciliationError
-from app.models import Attempt, AuditEvent, Payment, Subscription, Transaction, now
+from app.models import AuditEvent, Payment, Subscription, Transaction, now
 from app.schemas import CURRENCIES
 
 log = logging.getLogger("payments.normalize")
+SUBSCRIPTION_PAYMENT_STATUSES = {
+    "ACTIVE": "active",
+    "SUSPENDED": "suspended",
+    "CANCELLED": "cancelled",
+    "EXPIRED": "cancelled",
+    "APPROVAL_PENDING": "pending",
+    "APPROVED": "pending",
+}
 
 
 def timestamp(value: object) -> datetime:
@@ -46,32 +54,28 @@ def money(data: object) -> Decimal:
     return amount
 
 
-def normalized_status(raw: object) -> str:
+def normalized_status(raw: str) -> str:
     """Map provider statuses to collection-ledger states, preserving confirmed money movement."""
-    if not isinstance(raw, str):
-        raise ReconciliationError("Provider status must be a string")
     status = raw.upper()
     # Refunds/reversals are separate ledger movements; they do not erase the collection.
     if status in {"COMPLETED", "REFUNDED", "PARTIALLY_REFUNDED", "REVERSED", "S"}:
         return "completed"
     if status in {"PENDING", "P"}:
         return "pending"
-    if status in {"DENIED", "DECLINED", "FAILED", "CANCELLED", "CANCELED", "D", "V"}:
-        return "failed"
-    return "unknown"
+    return "failed"
 
 
-def update_payment_status(db: Session, payment: Payment) -> None:
+async def update_payment_status(db: AsyncSession, payment: Payment) -> None:
     """Project verified ledger facts onto the payment without erasing its checkout state."""
-    db.flush()
-    locked = db.scalar(
+    await db.flush()
+    locked = await db.scalar(
         select(Payment)
         .where(Payment.id == payment.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
     assert locked is not None
-    collection = db.scalar(
+    collection = await db.scalar(
         select(Transaction)
         .where(Transaction.payment_id == payment.id, Transaction.kind == "collection")
         .order_by((Transaction.status == "failed").asc(), Transaction.effective_at.desc())
@@ -79,23 +83,17 @@ def update_payment_status(db: Session, payment: Payment) -> None:
     if collection is None:
         return
     if collection.status == "failed" and payment.intent_key is not None:
-        latest = db.scalar(
-            select(Attempt)
-            .where(Attempt.payment_id == payment.id)
-            .order_by(Attempt.created_at.desc())
-            .limit(1)
-        )
-        if latest:
-            payment.status = latest.status
         return
     payment.status = collection.status
     if collection.status != "completed":
         return
     totals = dict(
-        db.execute(
-            select(Transaction.kind, func.sum(Transaction.amount))
-            .where(Transaction.original_id == collection.id, Transaction.status == "completed")
-            .group_by(Transaction.kind)
+        (
+            await db.execute(
+                select(Transaction.kind, func.sum(Transaction.amount))
+                .where(Transaction.original_id == collection.id, Transaction.status == "completed")
+                .group_by(Transaction.kind)
+            )
         ).all()
     )
     refunded = totals.get("refund", Decimal(0))
@@ -107,23 +105,21 @@ def update_payment_status(db: Session, payment: Payment) -> None:
         payment.status = "reversed"
 
 
-def link_payment(db: Session, row: Transaction, attempt: Attempt | None) -> None:
+async def link_payment(db: AsyncSession, row: Transaction, checkout: Payment | None) -> None:
     """Give each collection one payment; adjustments belong to their original payment."""
     if row.kind != "collection":
         if row.original_id:
-            original = db.get(Transaction, row.original_id)
+            original = await db.get(Transaction, row.original_id)
             if original:
                 row.payment_id = original.payment_id
         return
-    if attempt:
-        if row.currency != attempt.terms["currency"] or row.amount != Decimal(
-            attempt.terms["price_per_period"]
-        ):
+    if checkout:
+        if row.currency != checkout.currency or row.amount != checkout.price_per_period:
             raise ReconciliationError("Imported collection does not match checkout terms")
-        if row.payment_id and row.payment_id != attempt.payment_id:
+        if row.payment_id and row.payment_id != checkout.id:
             raise ReconciliationError("Imported collection belongs to another payment")
-        row.payment_id = attempt.payment_id
-        attempt.status, attempt.browser_state = row.status, "closed"
+        row.payment_id = checkout.id
+        checkout.status, checkout.browser_state = row.status, "closed"
     if row.payment_id:
         return
     payment = Payment(
@@ -137,28 +133,30 @@ def link_payment(db: Session, row: Transaction, attempt: Attempt | None) -> None
         created_at=row.effective_at,
     )
     db.add(payment)
-    db.flush()
+    await db.flush()
     row.payment_id = payment.id
 
 
-def move_collection(db: Session, row: Transaction, payment_id: str) -> None:
+async def move_collection(db: AsyncSession, row: Transaction, payment_id: str) -> None:
     """Join an imported collection and its adjustments to its exact checkout identity."""
     previous = row.payment_id
     if not previous or previous == payment_id:
         row.payment_id = payment_id
         return
-    imported = db.scalar(select(Payment).where(Payment.id == previous).with_for_update())
+    imported = await db.scalar(select(Payment).where(Payment.id == previous).with_for_update())
     if imported is None or imported.intent_key is not None or row.kind != "collection":
         raise ReconciliationError("Collection already belongs to another payment")
     row.payment_id = payment_id
-    for adjustment in db.scalars(select(Transaction).where(Transaction.original_id == row.id)):
+    for adjustment in await db.scalars(
+        select(Transaction).where(Transaction.original_id == row.id)
+    ):
         adjustment.payment_id = payment_id
-    db.flush()
-    db.delete(imported)
+    await db.flush()
+    await db.delete(imported)
 
 
-def transaction(
-    db: Session,
+async def transaction(
+    db: AsyncSession,
     resource: dict[str, Any],
     family: str,
     kind: str = "collection",
@@ -177,29 +175,36 @@ def transaction(
     if not isinstance(identifier, str) or not identifier:
         raise ReconciliationError("Provider transaction has no valid identity")
     order_id = resource.get("supplementary_data", {}).get("related_ids", {}).get("order_id")
-    # Use the same attempt -> ledger -> payment lock order as checkout completion.
-    attempt = (
-        db.scalar(select(Attempt).where(Attempt.provider_id == order_id).with_for_update())
+    # All correlated ingestion takes payment before ledger locks.
+    checkout = (
+        (await db.scalar(select(Payment).where(Payment.provider_id == order_id).with_for_update()))
         if kind == "collection" and order_id
         else None
     )
+    target_id = payment_id or (original.payment_id if original else None)
+    if target_id and checkout is None:
+        await db.scalar(select(Payment).where(Payment.id == target_id).with_for_update())
     row = (
-        db.scalar(
-            select(Transaction)
-            .where(Transaction.id == existing.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
+        (
+            await db.scalar(
+                select(Transaction)
+                .where(Transaction.id == existing.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
         )
         if existing
-        else db.scalar(
-            select(Transaction)
-            .where(
-                Transaction.provider_id == identifier,
-                Transaction.api_family == family,
-                Transaction.kind == kind,
+        else (
+            await db.scalar(
+                select(Transaction)
+                .where(
+                    Transaction.provider_id == identifier,
+                    Transaction.api_family == family,
+                    Transaction.kind == kind,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
-            .with_for_update()
-            .execution_options(populate_existing=True)
         )
     )
     amount = resource.get("amount", {})
@@ -210,7 +215,9 @@ def transaction(
         raise ReconciliationError("Unsupported provider currency")
     if money(amount) < 0:
         raise ReconciliationError("Ledger amounts must be non-negative")
-    raw = resource.get("status", resource.get("state", "UNKNOWN"))
+    raw = resource.get("status", resource.get("state"))
+    if not isinstance(raw, str):
+        raise ReconciliationError("Provider status must be a string")
     status = normalized_status(raw)
     raw = raw.upper()
     if row is None:
@@ -241,9 +248,16 @@ def transaction(
     # A stale pending notification must never undo a confirmed financial movement.
     if row.status != "completed" or status == "completed":
         row.status = status
-    target = attempt.payment_id if attempt else payment_id
+    # Refund acceptance is separate from the displayed result. Unrecognized
+    # provider results fail locally while retaining their financial reservation.
+    row.reservation_active = (
+        kind == "refund"
+        and row.status != "completed"
+        and raw not in {"DENIED", "DECLINED", "FAILED", "CANCELLED", "CANCELED", "D", "V"}
+    )
+    target = checkout.id if checkout else payment_id
     if target:
-        move_collection(db, row, target)
+        await move_collection(db, row, target)
     row.subscription_id = subscription_id or row.subscription_id
     row.original_id = original.id if original else row.original_id
     effective = resource.get("create_time", resource.get("time"))
@@ -251,11 +265,11 @@ def transaction(
         row.effective_at = timestamp(effective)
     row.last_synced_at = now()
     if row.subscription_id and not row.payment_id:
-        sub = db.get(Subscription, row.subscription_id)
+        sub = await db.get(Subscription, row.subscription_id)
         if sub:
             row.client_name, row.agreement_number = sub.client_name, sub.agreement_number
     if row.payment_id:
-        request = db.get(Payment, row.payment_id)
+        request = await db.get(Payment, row.payment_id)
         if request:
             row.client_name = request.client_name
             row.agreement_number = request.agreement_number
@@ -274,13 +288,13 @@ def transaction(
         or " ".join(filter(None, [name.get("given_name"), name.get("surname")]))
         or row.payer_name
     )
-    db.flush()
-    link_payment(db, row, attempt)
-    db.flush()
+    await db.flush()
+    await link_payment(db, row, checkout)
+    await db.flush()
     if row.payment_id:
-        payment = db.get(Payment, row.payment_id)
+        payment = await db.get(Payment, row.payment_id)
         if payment:
-            update_payment_status(db, payment)
+            await update_payment_status(db, payment)
     log.debug(
         "transaction_reconciled transaction=%s family=%s kind=%s status=%s",
         row.id,
@@ -291,8 +305,8 @@ def transaction(
     return row
 
 
-def subscription(
-    db: Session, resource: dict[str, Any], *, payment: Payment | None = None
+async def subscription(
+    db: AsyncSession, resource: dict[str, Any], *, payment: Payment | None = None
 ) -> Subscription:
     """Merge current provider subscription state and stage audited status changes."""
     if (
@@ -309,7 +323,7 @@ def subscription(
     amount, currency = money(fixed), fixed.get("currency_code")
     if amount < 0 or currency not in CURRENCIES:
         raise ReconciliationError("Unsupported subscription price or currency")
-    row = db.scalar(select(Subscription).where(Subscription.provider_id == resource["id"]))
+    row = await db.scalar(select(Subscription).where(Subscription.provider_id == resource["id"]))
     if row is None:
         row = Subscription(
             provider_id=resource["id"],
@@ -317,14 +331,14 @@ def subscription(
             origin="created_here" if payment else "imported",
         )
         db.add(row)
-        db.flush()
+        await db.flush()
         if resource.get("create_time"):
             row.created_at = timestamp(resource["create_time"])
     previous = row.status
     if payment:
         row.payment_id = payment.id
         row.client_name, row.agreement_number = payment.client_name, payment.agreement_number
-    set_subscription_status(db, row, resource["status"])
+    await set_subscription_status(db, row, resource["status"])
     if previous != row.status:
         db.add(
             AuditEvent(
@@ -355,13 +369,13 @@ def subscription(
         "failed_payments_count": info.get("failed_payments_count", 0),
     }
     row.last_synced_at = now()
-    db.flush()
+    await db.flush()
     log.debug("subscription_reconciled subscription=%s status=%s", row.id, row.status)
     return row
 
 
-def set_subscription_status(db: Session, item: Subscription, status: str) -> None:
-    """Keep subscription activation/cancellation and its latest checkout in agreement."""
+async def set_subscription_status(db: AsyncSession, item: Subscription, status: str) -> None:
+    """Keep subscription activation/cancellation and its payment checkout in agreement."""
     if item.status in {"CANCELLED", "EXPIRED"}:
         status = item.status
     mapped = {
@@ -371,21 +385,11 @@ def set_subscription_status(db: Session, item: Subscription, status: str) -> Non
         "EXPIRED": "cancelled",
     }.get(status)
     if item.payment_id and mapped:
-        # Claim the attempt before changing the agreement/payment, matching checkout locks.
         with db.no_autoflush:
-            attempt = db.scalar(
-                select(Attempt)
-                .where(Attempt.payment_id == item.payment_id)
-                .order_by(Attempt.created_at.desc())
-                .limit(1)
-                .with_for_update()
-            )
-        if attempt and attempt.provider_id == item.provider_id:
-            attempt.status, attempt.browser_state = mapped, "closed"
-            payment = db.scalar(
+            payment = await db.scalar(
                 select(Payment).where(Payment.id == item.payment_id).with_for_update()
             )
-            if payment:
-                payment.status = mapped
-                update_payment_status(db, payment)
+        if payment and payment.provider_id == item.provider_id:
+            payment.status, payment.browser_state = mapped, "closed"
+            await update_payment_status(db, payment)
     item.status = status

@@ -1,6 +1,8 @@
+import { errorMessage } from "./api";
 import { ArrowUpRight, ShieldCheck } from "lucide-react";
 import React, { useState } from "react";
-import { api, setCsrf, User } from "./api";
+import { api, setCsrf } from "./api";
+import type { User } from "./types";
 import { ThemeToggle } from "./ThemeToggle";
 export function Login({
   onLogin,
@@ -25,7 +27,7 @@ export function Login({
       setCsrf(user.csrf);
       onLogin(user);
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }

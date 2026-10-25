@@ -1,6 +1,7 @@
 import { ArrowDownLeft, ArrowUpRight, Repeat, Wallet } from "lucide-react";
 import React from "react";
-import { money, Stats } from "./api";
+import { money } from "./api";
+import type { Stats } from "./types";
 import { Empty } from "./Records";
 import { Badge } from "./ui";
 export function Dashboard({
@@ -122,13 +123,7 @@ export function Dashboard({
             )}
             <span>total agreements</span>
           </div>
-          {[
-            "ACTIVE",
-            "SUSPENDED",
-            "APPROVAL_PENDING",
-            "CANCELLED",
-            "EXPIRED",
-          ].map((s) => (
+          {["ACTIVE", "SUSPENDED", "CANCELLED", "EXPIRED"].map((s) => (
             <div className="status-row" key={s}>
               <Badge status={s} />
               <strong>{stats.current_subscriptions[s] ?? 0}</strong>

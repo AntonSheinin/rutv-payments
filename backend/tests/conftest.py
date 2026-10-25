@@ -8,9 +8,9 @@ import pytest
 from app.auth import password_hash
 from app.config import Settings, get_settings
 from app.models import Base
-from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, create_engine
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 TEST_URL = os.environ.get(
@@ -40,7 +40,7 @@ def engine():
 
 
 @pytest.fixture
-def sessions(engine):
+def migration_sessions(engine):
     actual = MetaData()
     actual.reflect(engine)
     actual.drop_all(engine)
@@ -74,23 +74,40 @@ def settings():
 
 
 @pytest.fixture
-def application(settings, sessions, monkeypatch):
-    import app.main as main
-
-    monkeypatch.setattr("app.auth.login_attempts", {})
-    monkeypatch.setattr(main, "session_factory", lambda: sessions)
-    # Fixtures own the schema; migration startup is covered on a dedicated empty test DB.
-    monkeypatch.setattr(main, "migrate_database", lambda engine: None)
-    main.app.dependency_overrides[get_settings] = lambda: settings
-    monkeypatch.setattr(main, "get_settings", lambda: settings)
-    yield main.app
-    main.app.dependency_overrides.clear()
+async def sessions(migration_sessions):
+    """Own async sessions on the test loop; schema recreation uses dedicated sync tooling."""
+    engine = create_async_engine(TEST_URL, connect_args={"connect_timeout": 5})
+    try:
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture
-def client(application, monkeypatch):
-    with TestClient(application) as client:
-        yield client
+async def application(settings, sessions, monkeypatch):
+    import app.lifecycle as lifecycle
+    import app.main as main
+
+    monkeypatch.setattr("app.auth.login_attempts", {})
+    monkeypatch.setattr(lifecycle, "session_factory", lambda settings: sessions)
+    # Schema fixtures own tables; migration behavior has separate populated/empty checks.
+    monkeypatch.setattr(lifecycle, "migrate_database", lambda connection: None)
+    main.app.dependency_overrides[get_settings] = lambda: settings
+    monkeypatch.setattr(lifecycle, "get_settings", lambda: settings)
+    try:
+        yield main.app
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def client(application):
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://testserver"
+        ) as client:
+            client.app = application
+            yield client
 
 
 @pytest.fixture
@@ -99,7 +116,7 @@ def headers():
 
 
 @pytest.fixture
-def provider(client):
+async def provider(client):
     """Exercise the real HTTP boundary against deterministic provider responses."""
     state = {"requests": [], "orders": {}, "captured": set(), "refunds": [], "mode": "ok"}
 
@@ -203,6 +220,7 @@ def provider(client):
             )
         raise AssertionError(f"Unexpected provider request: {request.method} {path}")
 
+    await client.app.state.paypal.client.aclose()
     client.app.state.paypal.client = httpx.AsyncClient(
         base_url="https://api-m.sandbox.paypal.com", transport=httpx.MockTransport(handle)
     )

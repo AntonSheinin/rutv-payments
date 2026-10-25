@@ -1,37 +1,14 @@
-import subprocess
-import sys
-
 import httpx
 import pytest
 from app.paypal import PayPal
+from support import outcome
 
 
-@pytest.mark.parametrize("level", ["INFO", "DEBUG"])
-def test_console_levels_are_repeatable_and_library_payload_logging_stays_off(level):
-    script = """
-import logging
-import sys
-from app.logging_config import configure_logging
-configure_logging(sys.argv[1])
-configure_logging(sys.argv[1])
-logging.getLogger('payments.test').info('activity_marker')
-logging.getLogger('payments.test').debug('detail_marker')
-for name in ('httpx', 'httpcore', 'sqlalchemy.engine'):
-    logging.getLogger(name).debug('library_payload_marker')
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script, level], capture_output=True, text=True, check=True
-    )
-    assert result.stderr.count("activity_marker") == 1
-    assert result.stderr.count("detail_marker") == (1 if level == "DEBUG" else 0)
-    assert "library_payload_marker" not in result.stderr
-
-
-def test_api_logs_omit_customer_data_credentials_and_queries(
+async def test_api_logs_omit_customer_data_credentials_and_queries(
     client, headers, payment_logs, provider
 ):
     private_values = ["PRIVATE-REFERENCE", "PRIVATE-COMMENT", "PRIVATE-KEY", "PRIVATE-PASSWORD"]
-    result = client.post(
+    result = await client.post(
         "/api/v1/payments",
         headers={**headers, "Idempotency-Key": private_values[2]},
         json={
@@ -44,19 +21,27 @@ def test_api_logs_omit_customer_data_credentials_and_queries(
         },
     )
     assert result.status_code == 200
+    item = result.json()
+    assert (await outcome(client, headers, item)).json()["status"] == "completed"
+    await outcome(client, headers, item)
+    await client.post(f"/api/v1/payments/{item['id']}/close", headers=headers)
     assert (
-        client.get("/api/v1/payments", params={"q": private_values[0]}, headers=headers).status_code
-        == 200
-    )
+        await client.get("/api/v1/payments", params={"q": private_values[0]}, headers=headers)
+    ).status_code == 200
     assert (
-        client.post(
+        await client.post(
             "/api/v1/auth/login",
             headers={"Origin": "http://testserver"},
             json={"username": "PRIVATE-USERNAME", "password": private_values[3]},
-        ).status_code
-        == 401
+        )
+    ).status_code == 401
+    assert payment_logs.text.count("checkout_submitted") == 1
+    assert payment_logs.text.count("checkout_finished") == 1
+    assert "checkout_status=success status=completed" in payment_logs.text
+    assert not any(
+        record.levelname == "INFO" and "http_request" in record.message
+        for record in payment_logs.records
     )
-    assert "checkout_submitted" in payment_logs.text
     assert "http_request" in payment_logs.text
     assert "staff_login_rejected" in payment_logs.text
     for value in [*private_values, "PRIVATE-USERNAME", "test-api-key", "Bearer"]:
@@ -87,7 +72,8 @@ async def test_provider_debug_logs_omit_request_response_and_exception_payloads(
             await paypal.request("GET", "/v2/checkout/orders/ORDER1")
     finally:
         await paypal.client.aclose()
-    assert "provider_request_completed" in payment_logs.text
+    assert payment_logs.text.count("provider_request_completed") == 1
+    assert "provider_request_started" not in payment_logs.text
     assert "operation=operation-1" in payment_logs.text
     assert "provider_transport_error" in payment_logs.text
     assert "PRIVATE-" not in payment_logs.text

@@ -9,7 +9,8 @@ function storedTheme(): Theme | null {
   try {
     const value = localStorage.getItem(storageKey);
     return value === "light" || value === "dark" ? value : null;
-  } catch {
+  } catch (error: unknown) {
+    if (!(error instanceof DOMException)) throw error;
     // Theme controls remain available when browser storage is disabled.
     return null;
   }
@@ -59,7 +60,8 @@ export function ThemeToggle() {
         setHasPreference(true);
         try {
           localStorage.setItem(storageKey, next);
-        } catch {
+        } catch (error: unknown) {
+          if (!(error instanceof DOMException)) throw error;
           // Keep the selected theme for this session when storage is unavailable.
         }
       }}

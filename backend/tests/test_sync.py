@@ -6,9 +6,59 @@ from unittest.mock import AsyncMock
 
 import pytest
 from app.errors import ReconciliationError
-from app.models import Subscription, SyncState, now
+from app.models import Subscription, SyncState, Transaction, now
 from app.schemas import SyncInput
 from app.sync import refresh_subscription, synchronize
+from sqlalchemy import select
+from support import capture
+
+
+async def test_history_import_commits_verified_items_and_reports_exclusions(
+    sessions, settings, payment_logs
+):
+    """One bad record cannot certify invalid money or discard another verified collection."""
+    paypal = AsyncMock()
+    entries = [
+        {
+            "transaction_info": {
+                "transaction_id": identifier,
+                "transaction_event_code": "T0006",
+                "transaction_amount": {"value": "50.00", "currency_code": currency},
+            }
+        }
+        for identifier, currency in [("VALID", "ILS"), ("MISMATCH", "ILS"), ("UNSUPPORTED", "GBP")]
+    ]
+
+    async def request(method, path, **kwargs):
+        if path == "/v1/reporting/transactions":
+            return {"transaction_details": entries, "total_pages": 1}
+        identifier = path.rsplit("/", 1)[-1]
+        return {
+            **capture(),
+            "id": identifier,
+            "amount": {
+                "value": "51.00" if identifier == "MISMATCH" else "50.00",
+                "currency_code": "ILS",
+            },
+        }
+
+    paypal.request.side_effect = request
+    async with sessions() as db:
+        result = await synchronize(
+            db,
+            SyncInput(scope="history", start_date="2026-10-21", end_date="2026-10-22"),
+            paypal,
+            settings,
+        )
+        assert result["processed"] == 1 and result["excluded"] == 2
+        assert result["next_page"] is None
+        assert list(await db.scalars(select(Transaction.provider_id))) == ["VALID"]
+    assert paypal.request.await_count == 3
+    assert all(call.args[0] == "GET" for call in paypal.request.await_args_list)
+    assert payment_logs.text.count("synchronization_started") == 1
+    assert payment_logs.text.count("synchronization_completed") == 1
+    assert "processed=1 excluded=2 next_page=None" in payment_logs.text
+    assert "Reporting resource amount mismatch" in payment_logs.text
 
 
 @pytest.mark.asyncio
@@ -18,7 +68,7 @@ from app.sync import refresh_subscription, synchronize
 async def test_missing_or_unsupported_imported_price_preserves_verified_snapshot(sessions, price):
     """An existing imported price must not be certified by an incomplete provider response."""
     previous = now() - timedelta(days=1)
-    with sessions() as db:
+    async with sessions() as db:
         row = Subscription(
             provider_id="SUBPRICE",
             status="ACTIVE",
@@ -27,7 +77,7 @@ async def test_missing_or_unsupported_imported_price_preserves_verified_snapshot
             last_synced_at=previous,
         )
         db.add(row)
-        db.commit()
+        await db.commit()
         paypal = AsyncMock()
         paypal.request.return_value = {
             "id": row.provider_id,
@@ -40,8 +90,8 @@ async def test_missing_or_unsupported_imported_price_preserves_verified_snapshot
         }
         with pytest.raises(ReconciliationError):
             await refresh_subscription(db, row.provider_id, paypal)
-        db.rollback()
-        db.refresh(row)
+        await db.rollback()
+        await db.refresh(row)
         assert (row.amount, row.currency, row.status, row.last_synced_at) == (
             Decimal("50.00"),
             "ILS",
@@ -71,13 +121,13 @@ async def test_missing_or_unsupported_imported_price_preserves_verified_snapshot
 async def test_malformed_import_never_advances_success(sessions, settings, scope, payload):
     """Missing collections or pagination are errors, not successfully imported empty pages."""
     previous = now() - timedelta(days=1)
-    with sessions() as db:
+    async with sessions() as db:
         state = SyncState(scope=scope, last_success=previous, checkpoint={"page": 9})
         row = Subscription(
             provider_id="SUBLIST", status="ACTIVE", amount=Decimal("50.00"), currency="ILS"
         )
         db.add_all([state, row])
-        db.commit()
+        await db.commit()
         paypal = AsyncMock()
 
         async def request(method, path, **kwargs):
@@ -107,8 +157,8 @@ async def test_malformed_import_never_advances_success(sessions, settings, scope
         )
         with pytest.raises(ReconciliationError):
             await synchronize(db, data, paypal, settings)
-        db.rollback()
-        db.refresh(state)
+        await db.rollback()
+        await db.refresh(state)
         assert state.last_success == previous and state.checkpoint == {"page": 9}
         assert all(call.args[0] == "GET" for call in paypal.request.await_args_list)
 
@@ -126,7 +176,7 @@ async def test_explicit_empty_page_is_valid_and_does_not_fetch_another_page(
     sessions, settings, scope, payload, next_page
 ):
     """A verified empty result remains distinct from absent data and automatic pagination."""
-    with sessions() as db:
+    async with sessions() as db:
         paypal = AsyncMock()
         paypal.request.return_value = payload
         result = await synchronize(
@@ -192,3 +242,26 @@ def test_invalid_calendar_timezone_is_rejected():
         SyncInput(
             scope="history", start_date="2026-10-19", end_date="2026-10-19", timezone="invalid/zone"
         )
+
+
+@pytest.mark.parametrize(
+    "status,expected", [("APPROVAL_PENDING", "pending"), ("UNRECOGNIZED", "failed")]
+)
+async def test_subscription_status_projection_is_consistent(
+    client, headers, provider, status, expected
+):
+    """Unknown provider outcomes fail in both initial callbacks and explicit reads."""
+    from support import mutations, outcome, submit
+
+    item = (await submit(client, headers, is_subscription=True)).json()
+    provider["subscription"]["status"] = status
+    assert (await outcome(client, headers, item)).json()["status"] == expected
+    response = await client.post(
+        "/api/v1/synchronizations",
+        headers=headers,
+        json={"scope": "payment", "resource_id": item["id"]},
+    )
+    assert response.status_code == 200
+    saved = (await client.get(f"/api/v1/payments/{item['id']}", headers=headers)).json()
+    assert saved["status"] == expected
+    assert not mutations(provider, "/capture")

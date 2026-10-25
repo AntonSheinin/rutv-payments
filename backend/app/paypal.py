@@ -46,7 +46,6 @@ class PayPal:
         """Refresh OAuth under a lock and cache the token until shortly before expiry."""
         async with self.token_lock:
             if self.token_expiry <= time.monotonic():
-                log.debug("oauth_token_refresh_started")
                 try:
                     r = await self.client.post(
                         "/v1/oauth2/token",
@@ -66,7 +65,6 @@ class PayPal:
                         or data["expires_in"] <= 0
                     )
                 ):
-                    log.warning("provider_response_invalid reason=oauth_fields")
                     raise ReconciliationError("PayPal returned an invalid OAuth response")
                 self.token = data["access_token"]
                 self.token_expiry = time.monotonic() + max(0, data["expires_in"] - 60)
@@ -77,11 +75,6 @@ class PayPal:
     def check(response: httpx.Response) -> None:
         """Raise PayPalError for failed HTTP responses using safe, bounded provider codes."""
         if response.is_error:
-            log.warning(
-                "provider_http_error status=%s debug_id=%r",
-                response.status_code,
-                response.headers.get("paypal-debug-id", ""),
-            )
             try:
                 body = response.json()
             except json.JSONDecodeError, UnicodeDecodeError:
@@ -94,6 +87,12 @@ class PayPal:
                 if isinstance(details, list) and details and isinstance(details[0], dict):
                     if isinstance(details[0].get("issue"), str):
                         code = details[0]["issue"]
+            log.warning(
+                "provider_http_error status=%s code=%r debug_id=%r",
+                response.status_code,
+                code[:100],
+                response.headers.get("paypal-debug-id", "")[:128],
+            )
             raise PayPalError(
                 response.status_code, code, response.headers.get("paypal-debug-id", "")
             )
@@ -104,10 +103,8 @@ class PayPal:
         try:
             data = response.json()
         except json.JSONDecodeError, UnicodeDecodeError:
-            log.warning("provider_response_invalid reason=json")
             raise ReconciliationError("PayPal returned invalid JSON") from None
         if not isinstance(data, dict):
-            log.warning("provider_response_invalid reason=object_expected")
             raise ReconciliationError("PayPal returned a non-object response")
         return data
 
@@ -131,9 +128,6 @@ class PayPal:
         if request_id:
             headers["PayPal-Request-Id"] = request_id
         started = time.monotonic()
-        log.debug(
-            "provider_request_started method=%s path=%s operation=%s", method, path, request_id
-        )
         try:
             response = await self.client.request(
                 method, path, json=data, params=params, headers=headers
@@ -156,7 +150,7 @@ class PayPal:
             request_id,
             response.status_code,
             (time.monotonic() - started) * 1000,
-            response.headers.get("paypal-debug-id", ""),
+            response.headers.get("paypal-debug-id", "")[:128],
         )
         if response.status_code == 401:
             # Invalidate for a future explicit action; never replay this request.
@@ -175,3 +169,17 @@ def provider_id(value: object) -> str:
     ):
         raise ReconciliationError("Invalid provider ID")
     return value
+
+
+def failure_code(error: Exception) -> str:
+    """Return only safe bounded diagnostics, without provider or SQL payloads."""
+    return error.code if isinstance(error, PayPalError) else type(error).__name__
+
+
+def definite_rejection(error: Exception) -> bool:
+    """Only explicit provider input/auth rejection establishes no accepted mutation."""
+    return (
+        isinstance(error, PayPalError)
+        and error.status in {400, 401, 403, 404, 422}
+        and error.code not in {"ORDER_ALREADY_CAPTURED", "DUPLICATE_REQUEST_ID"}
+    )

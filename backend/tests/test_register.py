@@ -8,7 +8,9 @@ from app.normalize import transaction
 from sqlalchemy import func, select
 
 
-def test_one_payment_row_survives_collection_and_partial_full_refunds(client, headers, provider):
+async def test_one_payment_row_survives_collection_and_partial_full_refunds(
+    client, headers, provider
+):
     """Refund ledger movements update the original payment rather than adding list rows."""
     body = {
         "first_name": "Test",
@@ -17,119 +19,133 @@ def test_one_payment_row_survives_collection_and_partial_full_refunds(client, he
         "price_per_period": "50.00",
         "intent_key": "register",
     }
-    item = client.post("/api/v1/payments", headers=headers, json=body).json()
-    result = client.get("/api/v1/payments", headers=headers).json()
-    assert result["total"] == 1 and result["items"][0]["status"] == "awaiting_approval"
+    item = (await client.post("/api/v1/payments", headers=headers, json=body)).json()
+    result = (await client.get("/api/v1/payments", headers=headers)).json()
+    assert result["total"] == 1 and result["items"][0]["status"] == "pending"
     assert result["items"][0]["collection_id"] is None
-    assert client.get("/api/v1/payment-requests", headers=headers).status_code == 404
-    outcome = client.post(
+    outcome = await client.post(
         f"/api/v1/payments/{item['id']}/checkout-outcome",
         headers=headers,
         json={
-            "attempt_id": item["attempt_id"],
             "proof": item["proof"],
             "outcome": "approved",
             "provider_id": item["provider_id"],
         },
     )
     assert outcome.json()["status"] == "completed"
-    payment = client.get("/api/v1/payments", headers=headers).json()["items"][0]
+    payment = (await client.get("/api/v1/payments", headers=headers)).json()["items"][0]
     assert payment["id"] == item["id"] and payment["can_refund"]
     for index, amount, status in [(1, "20.00", "partially_refunded"), (2, "30.00", "refunded")]:
-        response = client.post(
+        response = await client.post(
             f"/api/v1/transactions/{payment['collection_id']}/refunds",
             headers={**headers, "Idempotency-Key": f"refund-register-{index}"},
             json={"amount": amount, "reason": "Test refund"},
         )
         assert response.status_code == 200
-        result = client.get("/api/v1/payments", headers=headers).json()
+        result = (await client.get("/api/v1/payments", headers=headers)).json()
         assert result["total"] == 1
         assert result["items"][0]["status"] == status
         assert result["items"][0]["amount"] == "50.00"
-        assert client.get("/api/v1/payments?kind=refund", headers=headers).json()["total"] == 1
+        assert (await client.get("/api/v1/payments?kind=refund", headers=headers)).json()[
+            "total"
+        ] == 1
     assert not result["items"][0]["can_refund"]
-    assert client.get("/api/v1/payments?kind=collection", headers=headers).json()["total"] == 0
+    assert (await client.get("/api/v1/payments?kind=collection", headers=headers)).json()[
+        "total"
+    ] == 0
     assert (
         len(
-            client.get(f"/api/v1/payments/{item['id']}", headers=headers).json()["transactions"][
-                "items"
-            ]
+            (await client.get(f"/api/v1/payments/{item['id']}", headers=headers)).json()[
+                "transactions"
+            ]["items"]
         )
         == 3
     )
 
 
-def test_cancelled_payment_is_in_register_without_a_collection(client, headers, provider):
+async def test_cancelled_payment_is_in_register_without_a_collection(client, headers, provider):
     """Cancellation stays visible and no financial row is invented to display it."""
-    item = client.post(
-        "/api/v1/payments",
-        headers=headers,
-        json={
-            "first_name": "Test",
-            "last_name": "Client",
-            "agreement_number": "001",
-            "price_per_period": "50.00",
-            "intent_key": "cancel-register",
-        },
+    item = (
+        await client.post(
+            "/api/v1/payments",
+            headers=headers,
+            json={
+                "first_name": "Test",
+                "last_name": "Client",
+                "agreement_number": "001",
+                "price_per_period": "50.00",
+                "intent_key": "cancel-register",
+            },
+        )
     ).json()
-    client.post(
-        f"/api/v1/payments/{item['id']}/attempts/{item['attempt_id']}/cancel", headers=headers
+    await client.post(
+        f"/api/v1/payments/{item['id']}/checkout-outcome",
+        headers=headers,
+        json={"proof": item["proof"], "outcome": "cancelled"},
     )
-    result = client.get("/api/v1/payments?status=cancelled", headers=headers).json()
+    result = (await client.get("/api/v1/payments?status=cancelled", headers=headers)).json()
     assert result["total"] == 1 and result["items"][0]["id"] == item["id"]
     assert result["items"][0]["collection_id"] is None
-    assert client.get("/api/v1/transactions", headers=headers).json()["total"] == 0
+    assert (await client.get("/api/v1/transactions", headers=headers)).json()["total"] == 0
 
 
-def test_imported_collection_has_one_payment_and_its_refund_is_linked(sessions, client, headers):
+async def test_imported_collection_has_one_payment_and_its_refund_is_linked(
+    sessions, client, headers
+):
     """Repeated imports merge by exact provider identity without duplicate payments."""
-    with sessions() as db:
+    async with sessions() as db:
         data = {
             "id": "IMPORTED-CAPTURE",
             "status": "PENDING",
             "amount": {"value": "10.00", "currency_code": "USD"},
             "create_time": now().isoformat(),
         }
-        collection = transaction(db, data, "capture", origin="imported")
+        collection = await transaction(db, data, "capture", origin="imported")
         payment_id = collection.payment_id
-        db.commit()
-        assert db.get(Payment, payment_id).status == "pending"
+        await db.commit()
+        assert (await db.get(Payment, payment_id)).status == "pending"
         data["status"] = "COMPLETED"
-        collection = transaction(db, data, "capture", origin="imported")
-        transaction(
+        collection = await transaction(db, data, "capture", origin="imported")
+        await transaction(
             db,
-            {**data, "id": "IMPORTED-REFUND", "amount": {"value": "3.00", "currency_code": "USD"}},
+            {
+                **data,
+                "id": "IMPORTED-REFUND",
+                "amount": {"value": "3.00", "currency_code": "USD"},
+            },
             "capture",
             "refund",
             original=collection,
             origin="imported",
         )
-        db.commit()
-        assert db.scalar(select(func.count()).select_from(Payment)) == 1
-        assert db.get(Payment, payment_id).status == "partially_refunded"
-        assert set(db.scalars(select(Transaction.payment_id))) == {payment_id}
-    listing = client.get("/api/v1/payments?kind=refund", headers=headers).json()
+        await db.commit()
+        assert (await db.scalar(select(func.count()).select_from(Payment))) == 1
+        assert (await db.get(Payment, payment_id)).status == "partially_refunded"
+        assert set(await db.scalars(select(Transaction.payment_id))) == {payment_id}
+    listing = (await client.get("/api/v1/payments?kind=refund", headers=headers)).json()
     assert listing["total"] == 1 and listing["items"][0]["id"] == payment_id
     assert listing["items"][0]["refunded_amount"] == "3.00"
 
 
-def test_exact_capture_identity_merges_import_into_existing_checkout(
+async def test_exact_capture_identity_merges_import_into_existing_checkout(
     sessions, client, headers, provider
 ):
     """An early import cannot leave a duplicate payment after its callback is verified."""
-    item = client.post(
-        "/api/v1/payments",
-        headers=headers,
-        json={
-            "first_name": "Test",
-            "last_name": "Client",
-            "agreement_number": "001",
-            "price_per_period": "50.00",
-            "intent_key": "import-before-callback",
-        },
+    item = (
+        await client.post(
+            "/api/v1/payments",
+            headers=headers,
+            json={
+                "first_name": "Test",
+                "last_name": "Client",
+                "agreement_number": "001",
+                "price_per_period": "50.00",
+                "intent_key": "import-before-callback",
+            },
+        )
     ).json()
-    with sessions() as db:
-        transaction(
+    async with sessions() as db:
+        await transaction(
             db,
             {
                 "id": "CAP" + item["provider_id"],
@@ -140,40 +156,41 @@ def test_exact_capture_identity_merges_import_into_existing_checkout(
             "capture",
             origin="imported",
         )
-        db.commit()
-        assert db.scalar(select(func.count()).select_from(Payment)) == 2
-    response = client.post(
+        await db.commit()
+        assert (await db.scalar(select(func.count()).select_from(Payment))) == 2
+    response = await client.post(
         f"/api/v1/payments/{item['id']}/checkout-outcome",
         headers=headers,
         json={
-            "attempt_id": item["attempt_id"],
             "proof": item["proof"],
             "outcome": "approved",
             "provider_id": item["provider_id"],
         },
     )
     assert response.status_code == 200
-    result = client.get("/api/v1/payments", headers=headers).json()
+    result = (await client.get("/api/v1/payments", headers=headers)).json()
     assert result["total"] == 1 and result["items"][0]["id"] == item["id"]
 
 
-def test_import_correlated_by_order_closes_attempt_without_another_capture(
+async def test_import_correlated_by_order_closes_attempt_without_another_capture(
     sessions, client, headers, provider
 ):
     """Verified imported collection closes its checkout; a later callback is read-only."""
-    item = client.post(
-        "/api/v1/payments",
-        headers=headers,
-        json={
-            "first_name": "Test",
-            "last_name": "Client",
-            "agreement_number": "001",
-            "price_per_period": "50.00",
-            "intent_key": "order-correlated-import",
-        },
+    item = (
+        await client.post(
+            "/api/v1/payments",
+            headers=headers,
+            json={
+                "first_name": "Test",
+                "last_name": "Client",
+                "agreement_number": "001",
+                "price_per_period": "50.00",
+                "intent_key": "order-correlated-import",
+            },
+        )
     ).json()
-    with sessions() as db:
-        transaction(
+    async with sessions() as db:
+        await transaction(
             db,
             {
                 "id": "CAP" + item["provider_id"],
@@ -185,13 +202,12 @@ def test_import_correlated_by_order_closes_attempt_without_another_capture(
             "capture",
             origin="imported",
         )
-        db.commit()
+        await db.commit()
     count = len(provider["requests"])
-    response = client.post(
+    response = await client.post(
         f"/api/v1/payments/{item['id']}/checkout-outcome",
         headers=headers,
         json={
-            "attempt_id": item["attempt_id"],
             "proof": item["proof"],
             "outcome": "approved",
             "provider_id": item["provider_id"],
@@ -199,38 +215,41 @@ def test_import_correlated_by_order_closes_attempt_without_another_capture(
     )
     assert response.json()["status"] == "completed"
     assert len(provider["requests"]) == count
-    assert client.get("/api/v1/payments", headers=headers).json()["total"] == 1
+    assert (await client.get("/api/v1/payments", headers=headers)).json()["total"] == 1
 
 
-def test_each_subscription_installment_has_its_own_payment(sessions, client, headers, provider):
+async def test_each_subscription_installment_has_its_own_payment(
+    sessions, client, headers, provider
+):
     """Agreement activation and separate collected installments cannot share a refund identity."""
-    item = client.post(
-        "/api/v1/payments",
-        headers=headers,
-        json={
-            "first_name": "Test",
-            "last_name": "Client",
-            "agreement_number": "001",
-            "price_per_period": "50.00",
-            "intent_key": "subscription-register",
-            "is_subscription": True,
-        },
+    item = (
+        await client.post(
+            "/api/v1/payments",
+            headers=headers,
+            json={
+                "first_name": "Test",
+                "last_name": "Client",
+                "agreement_number": "001",
+                "price_per_period": "50.00",
+                "intent_key": "subscription-register",
+                "is_subscription": True,
+            },
+        )
     ).json()
-    response = client.post(
+    response = await client.post(
         f"/api/v1/payments/{item['id']}/checkout-outcome",
         headers=headers,
         json={
-            "attempt_id": item["attempt_id"],
             "proof": item["proof"],
             "outcome": "approved",
             "provider_id": item["provider_id"],
         },
     )
     assert response.json()["status"] == "active"
-    with sessions() as db:
-        subscription = db.scalar(select(Subscription))
+    async with sessions() as db:
+        subscription = await db.scalar(select(Subscription))
         for index in range(2):
-            transaction(
+            await transaction(
                 db,
                 {
                     "id": f"SALE-{index}",
@@ -241,15 +260,17 @@ def test_each_subscription_installment_has_its_own_payment(sessions, client, hea
                 "sale",
                 subscription_id=subscription.id,
             )
-        db.commit()
-        assert db.scalar(select(func.count()).select_from(Payment)) == 3
-        assert len(set(db.scalars(select(Transaction.payment_id)))) == 2
-    results = client.get("/api/v1/payments", headers=headers).json()
+        await db.commit()
+        assert (await db.scalar(select(func.count()).select_from(Payment))) == 3
+        assert len(set(await db.scalars(select(Transaction.payment_id)))) == 2
+    results = (await client.get("/api/v1/payments", headers=headers)).json()
     assert results["total"] == 3
     assert sorted(row["status"] for row in results["items"]) == ["active", "completed", "completed"]
 
 
-def test_explicit_new_payment_does_not_reuse_failed_payment(sessions, client, headers, provider):
+async def test_explicit_new_payment_does_not_reuse_failed_payment(
+    sessions, client, headers, provider
+):
     """A failed ledger observation cannot block the next explicitly authorized attempt."""
     body = {
         "first_name": "Test",
@@ -258,24 +279,23 @@ def test_explicit_new_payment_does_not_reuse_failed_payment(sessions, client, he
         "price_per_period": "50.00",
         "intent_key": "restart-after-decline",
     }
-    item = client.post("/api/v1/payments", headers=headers, json=body).json()
+    item = (await client.post("/api/v1/payments", headers=headers, json=body)).json()
     provider["mode"] = "capture_decline"
 
-    def approve(item):
-        return client.post(
+    async def approve(item):
+        return await client.post(
             f"/api/v1/payments/{item['id']}/checkout-outcome",
             headers=headers,
             json={
-                "attempt_id": item["attempt_id"],
                 "proof": item["proof"],
                 "outcome": "approved",
                 "provider_id": item["provider_id"],
             },
         )
 
-    assert approve(item).json()["status"] == "failed"
-    with sessions() as db:
-        transaction(
+    assert (await approve(item)).json()["status"] == "failed"
+    async with sessions() as db:
+        await transaction(
             db,
             {
                 "id": "FAILED-CAPTURE",
@@ -286,16 +306,18 @@ def test_explicit_new_payment_does_not_reuse_failed_payment(sessions, client, he
             "capture",
             payment_id=item["id"],
         )
-        db.commit()
+        await db.commit()
     provider["mode"] = "ok"
-    second = client.post(
-        "/api/v1/payments",
-        headers={**headers, "Idempotency-Key": "new-explicit-attempt"},
-        json={**body, "intent_key": "fresh-after-decline"},
+    second = (
+        await client.post(
+            "/api/v1/payments",
+            headers={**headers, "Idempotency-Key": "new-explicit-attempt"},
+            json={**body, "intent_key": "fresh-after-decline"},
+        )
     ).json()
     assert second["id"] != item["id"]
-    assert approve(second).json()["status"] == "completed"
-    listing = client.get("/api/v1/payments", headers=headers).json()
+    assert (await approve(second)).json()["status"] == "completed"
+    listing = (await client.get("/api/v1/payments", headers=headers)).json()
     assert listing["total"] == 2
     collected = next(row for row in listing["items"] if row["id"] == second["id"])
     assert collected["status"] == "completed"
@@ -316,11 +338,11 @@ def test_explicit_new_payment_does_not_reuse_failed_payment(sessions, client, he
         ("SUSPENDED", 12, [{"tenure_type": "REGULAR", "cycles_remaining": 9}], 9, False),
     ],
 )
-def test_subscription_list_and_details_show_recorded_charges_and_remaining(
+async def test_subscription_list_and_details_show_recorded_charges_and_remaining(
     sessions, client, headers, provider, status, total, executions, remaining, unlimited
 ):
     """Separate successful ledger charges from provider cycle counters and trial cycles."""
-    with sessions() as db:
+    async with sessions() as db:
         item = Subscription(
             provider_id="I-PROGRESS",
             status=status,
@@ -329,7 +351,7 @@ def test_subscription_list_and_details_show_recorded_charges_and_remaining(
             metadata_json={"total_cycles": total, "cycle_executions": executions},
         )
         db.add(item)
-        db.flush()
+        await db.flush()
         identifier = item.id
         for index, (kind, raw) in enumerate(
             [
@@ -340,7 +362,7 @@ def test_subscription_list_and_details_show_recorded_charges_and_remaining(
                 ("refund", "COMPLETED"),
             ]
         ):
-            transaction(
+            await transaction(
                 db,
                 {
                     "id": f"PROGRESS-{index}",
@@ -352,9 +374,9 @@ def test_subscription_list_and_details_show_recorded_charges_and_remaining(
                 kind,
                 subscription_id=identifier,
             )
-        db.commit()
-    rows = client.get("/api/v1/subscriptions", headers=headers).json()["items"]
-    detail = client.get(f"/api/v1/subscriptions/{identifier}", headers=headers).json()
+        await db.commit()
+    rows = (await client.get("/api/v1/subscriptions", headers=headers)).json()["items"]
+    detail = (await client.get(f"/api/v1/subscriptions/{identifier}", headers=headers)).json()
     for row in [rows[0], detail]:
         assert row["charged_payments"] == 2
         assert row["remaining_payments"] == remaining

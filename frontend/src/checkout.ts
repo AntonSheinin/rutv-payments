@@ -1,4 +1,5 @@
-import { api, CheckoutResult } from "./api";
+import { api } from "./api";
+import type { CheckoutResult } from "./types";
 /** PayPal controls both checkout presentations; neither flow retries automatically. */
 export interface GuestSession {
   destroy(): void;
@@ -82,7 +83,6 @@ export function checkoutSdk(
 export const submissionStorage = "payments.current-submission";
 export interface SubmissionIdentity {
   intent: string;
-  key: string;
 }
 export function storedSubmission(): SubmissionIdentity | null {
   const value = sessionStorage.getItem(submissionStorage);
@@ -92,21 +92,16 @@ export function storedSubmission(): SubmissionIdentity | null {
     typeof parsed !== "object" ||
     parsed === null ||
     !("intent" in parsed) ||
-    !("key" in parsed) ||
-    typeof parsed.intent !== "string" ||
-    typeof parsed.key !== "string"
+    typeof parsed.intent !== "string"
   )
     throw new Error("Invalid saved submission identity");
-  return { intent: parsed.intent, key: parsed.key };
+  return { intent: parsed.intent };
 }
 
 export async function closeCheckout(
   item: CheckoutResult,
 ): Promise<CheckoutResult> {
   return item.checkout_status === null
-    ? api<CheckoutResult>(
-        `/payments/${item.id}/attempts/${item.attempt_id}/close`,
-        "POST",
-      )
+    ? api<CheckoutResult>(`/payments/${item.id}/close`, "POST")
     : item;
 }

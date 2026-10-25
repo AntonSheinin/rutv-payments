@@ -1,129 +1,3 @@
-export interface User {
-  name: string;
-  csrf: string;
-}
-export interface Options {
-  currencies: string[];
-  period_limits: Record<string, number>;
-  environment: string;
-  paypal_configured: boolean;
-  paypal_client_id: string;
-  maximum_amount: string;
-}
-export interface Entity {
-  checkout_status?: "success" | "failed" | null;
-  id: string;
-  provider_id?: string;
-  client_name?: string;
-  agreement_number?: string;
-  can_refund?: boolean;
-  collection_id?: string | null;
-  refundable_amount?: string | null;
-  refunded_amount?: string;
-  refund_deadline?: string;
-  status?: string;
-  can_cancel?: boolean;
-  cancellable_attempt_id?: string | null;
-  provider_status?: string;
-  amount?: string;
-  price_per_period?: string;
-  currency?: string;
-  period_unit?: string;
-  period_count?: number;
-  is_subscription?: boolean;
-  payment_cycles?: number | null;
-  comments?: string;
-  effective_at?: string;
-  created_at?: string;
-  last_synced_at?: string;
-  next_billing_at?: string;
-  outstanding?: string;
-  payer_name?: string;
-  payer_email?: string;
-  kind?: string;
-  fee?: string | null;
-  net?: string | null;
-  origin?: string;
-  url?: string;
-  payment_id?: string;
-  subscription_id?: string;
-  charged_payments?: number;
-  remaining_payments?: number | null;
-  payments_unlimited?: boolean;
-  api_family?: string;
-  transactions?: Page;
-  adjustments?: Entity[];
-  attempts?: Page;
-  terms?: PaymentTerms;
-  error?: string;
-  metadata_json?: {
-    frequency?: { interval_count: number; interval_unit: string };
-    total_cycles?: number | null;
-    failed_payments_count?: number;
-  };
-  lifetime_totals?: { currency: string; kind: string; amount: string }[];
-}
-export interface PaymentTerms {
-  first_name: string;
-  last_name: string;
-  agreement_number: string;
-  price_per_period: string;
-  currency: string;
-  period_unit: string;
-  period_count: number;
-  is_subscription: boolean;
-  payment_cycles: number | null;
-  comments: string;
-}
-export interface CheckoutResult {
-  checkout_status: "success" | "failed" | null;
-  id: string;
-  attempt_id: string;
-  provider_id: string | null;
-  status: string;
-  browser_state: string;
-  terms: PaymentTerms & { client_name: string };
-  proof: string | null;
-  can_cancel: boolean;
-  error?: string;
-}
-export interface SyncResult {
-  processed: number;
-  excluded: number;
-  next_page: number | null;
-  coverage_note: string;
-}
-export interface Page {
-  items: Entity[];
-  total: number;
-  page: number;
-  page_size: number;
-}
-export interface Stats {
-  currencies: {
-    currency: string;
-    collected: string;
-    refunds: string;
-    reversals: string;
-    net_before_fees: string;
-    net_after_fees: string | null;
-    known_fees: string;
-    fees_complete: boolean;
-    completed_count: number;
-    pending_count: number;
-    failed_count: number;
-  }[];
-  trends: { date: string; currency: string; kind: string; amount: string }[];
-  current_subscriptions: Record<string, number>;
-  scope: string;
-  timezone: string;
-  environment: string;
-  coverage: {
-    scope: string;
-    last_success?: string;
-  }[];
-}
-
 let csrf = "";
 export class ApiError extends Error {
   constructor(
@@ -139,7 +13,7 @@ export function setCsrf(value: string) {
 }
 let pendingRequests = 0;
 const requestListeners = new Set<() => void>();
-/** Keep new-attempt controls locked until all open API responses are consumed. */
+/** Keep new-payment controls locked until all open API responses are consumed. */
 export function requestsPending() {
   return pendingRequests > 0;
 }
@@ -195,16 +69,23 @@ export async function api<T>(
     requestActivity(-1);
   }
 }
-export function money(value?: string | null, currency = "ILS") {
+/** Narrow unknown fetch/SDK errors without treating arbitrary payloads as messages. */
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return "Unexpected error. Inspect the saved result before taking another action.";
+}
+export function money(
+  value: string | null | undefined,
+  currency: string | null,
+) {
   // Number conversion is display-only; authoritative financial arithmetic uses Decimal.
   return value == null
     ? "Not available"
-    : new Intl.NumberFormat("en", { style: "currency", currency }).format(
-        Number(value),
-      );
-}
-export function localTimezone() {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    : currency == null
+      ? `${value} (currency unavailable)`
+      : new Intl.NumberFormat("en", { style: "currency", currency }).format(
+          Number(value),
+        );
 }
 export function dateLabel(value?: string | null) {
   return value

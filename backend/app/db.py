@@ -1,37 +1,90 @@
-"""Request-scoped PostgreSQL sessions for direct API requests."""
+"""Async request sessions and probes of the original singleton ownership connection."""
 
-from collections.abc import Generator
+import logging
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from alembic import command
 from alembic.config import Config
-from fastapi import Depends, Request
-from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from fastapi import Depends, HTTPException, Request
+from sqlalchemy import Connection, text
+from sqlalchemy.exc import (
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    PendingRollbackError,
+    ResourceClosedError,
+)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import get_settings
+from app.config import Settings
+
+log = logging.getLogger("payments.db")
 
 
-def get_db(request: Request) -> Generator[Session]:
-    """Yield a request-scoped session; closing it rolls back uncommitted changes."""
-    with request.app.state.database_session() as session:
+def session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:
+    """Create the application's async engine on its owning lifespan/event loop."""
+    engine = create_async_engine(
+        settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 10}
+    )
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
+    """Close/rollback the request's session before returning its assembled response."""
+    async with request.app.state.database_session() as session:
         yield session
 
 
-Db = Annotated[Session, Depends(get_db, scope="function")]
+Db = Annotated[AsyncSession, Depends(get_db, scope="function")]
 
 
-def session_factory() -> sessionmaker[Session]:
-    """Create PostgreSQL sessions that retain loaded values after commit."""
-    engine = create_engine(
-        get_settings().database_url, pool_pre_ping=True, connect_args={"connect_timeout": 10}
-    )
-    return sessionmaker(engine, expire_on_commit=False)
-
-
-def migrate_database(engine: Engine) -> None:
-    """Upgrade the schema before serving requests, using the application's database."""
+def migrate_database(connection: Connection) -> None:
+    """Run the one Alembic chain using a supplied synchronous/adapted connection."""
     config = Config("alembic.ini")
-    with engine.begin() as connection:
-        config.attributes["connection"] = connection
-        command.upgrade(config, "head")
+    config.attributes["connection"] = connection
+    command.upgrade(config, "head")
+
+
+async def ownership(request: Request) -> None:
+    """Fail closed after losing the original owner; never reacquire or share probe transactions."""
+    state = request.app.state
+    async with state.ownership_probe:
+        lock = state.ownership
+        if state.ownership_lost or lock.invalidated or lock.closed:
+            if not state.ownership_lost:
+                log.error(
+                    "database_ownership_lost pid=%s reason=connection_closed", state.owner_pid
+                )
+            state.ownership_lost = True
+            raise HTTPException(503, "Database ownership lost; restart required")
+        try:
+            owned = await lock.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' "
+                    "AND pid=pg_backend_pid() AND pid=:pid AND classid=0 "
+                    "AND objid=783417029 AND granted)"
+                ),
+                {"pid": state.owner_pid},
+            )
+            await lock.commit()
+        except (
+            OperationalError,
+            InterfaceError,
+            DisconnectionError,
+            ResourceClosedError,
+            PendingRollbackError,
+        ) as error:
+            state.ownership_lost = True
+            log.error(
+                "database_ownership_lost pid=%s reason=%s", state.owner_pid, type(error).__name__
+            )
+            raise HTTPException(503, "Database ownership unavailable; restart required") from None
+        # Programming defects propagate to the safe global 500 boundary before dispatch.
+        if not owned:
+            state.ownership_lost = True
+            log.error("database_ownership_lost pid=%s reason=lock_missing", state.owner_pid)
+            raise HTTPException(503, "Database ownership lost; restart required")
+
+
+Mutation = Annotated[None, Depends(ownership)]

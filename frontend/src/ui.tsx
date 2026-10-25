@@ -1,4 +1,3 @@
-import { localTimezone } from "./api";
 export type View = "dashboard" | "payments" | "subscriptions" | "create";
 export type SearchState = {
   q: string;
@@ -36,17 +35,17 @@ export function query(filters: SearchState, page = 1, pageSize = 20) {
   const q = new URLSearchParams({
     page: String(page),
     page_size: String(pageSize),
-    timezone: localTimezone(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
   Object.entries(filters).forEach(([k, v]) => {
     if (v) q.set(k, v);
   });
   return "?" + q.toString();
 }
-export function Badge({ status }: { status?: string }) {
+export function Badge({ status }: { status: string }) {
   return (
-    <span className={"badge " + (status || "unknown").toLowerCase()}>
-      {(status || "unknown").replaceAll("_", " ")}
+    <span className={"badge " + status.toLowerCase()}>
+      {status.replaceAll("_", " ")}
     </span>
   );
 }

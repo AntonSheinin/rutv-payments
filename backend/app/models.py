@@ -1,4 +1,4 @@
-"""Financial records and immutable identities for direct, single-attempt actions."""
+"""Payments own checkout execution and immutable financial action identities."""
 
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -44,11 +44,30 @@ class Payment(Record, Base):
     __tablename__ = "payments"
     __table_args__ = (
         UniqueConstraint("actor", "intent_key"),
+        UniqueConstraint("actor", "submission_key"),
+        CheckConstraint(
+            "checkout_status IN ('success', 'failed')", name="ck_payment_checkout_status"
+        ),
         CheckConstraint("currency IN ('ILS', 'USD', 'EUR')"),
         CheckConstraint("price_per_period >= 0"),
     )
     intent_key: Mapped[str | None] = mapped_column(String(128))
-    status: Mapped[str] = mapped_column(String(30), default="unknown")
+    first_name: Mapped[str | None] = mapped_column(String(140))
+    last_name: Mapped[str | None] = mapped_column(String(140))
+    submission_key: Mapped[str | None] = mapped_column(String(128))
+    input_hash: Mapped[str | None] = mapped_column(String(64))
+    # Immutable provider correlation also preserves already-dispatched request keys.
+    provider_correlation: Mapped[str] = mapped_column(
+        String(36), unique=True, default=lambda: str(uuid7())
+    )
+    provider_id: Mapped[str | None] = mapped_column(String(128), unique=True)
+    plan_id: Mapped[str | None] = mapped_column(String(128))
+    checkout_status: Mapped[str | None] = mapped_column(String(10))
+    browser_state: Mapped[str | None] = mapped_column(String(20))
+    phase: Mapped[str | None] = mapped_column(String(20))
+    error: Mapped[str | None] = mapped_column(String(100))
+    debug_id: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(30), default="failed")
     price_per_period: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     currency: Mapped[str] = mapped_column(String(3))
     period_unit: Mapped[str | None] = mapped_column(String(8))
@@ -61,31 +80,6 @@ class Payment(Record, Base):
     actor: Mapped[str | None] = mapped_column(String(255))
     environment: Mapped[str | None] = mapped_column(String(10))
     origin: Mapped[str] = mapped_column(String(20), default="created_here")
-
-
-class Attempt(Record, Base):
-    """One immutable checkout with independently claimed create and completion actions."""
-
-    __tablename__ = "payment_attempts"
-    __table_args__ = (
-        UniqueConstraint("actor", "submission_key"),
-        CheckConstraint(
-            "checkout_status IN ('success', 'failed')", name="ck_attempt_checkout_status"
-        ),
-    )
-    payment_id: Mapped[str] = mapped_column(ForeignKey("payments.id"), index=True)
-    actor: Mapped[str] = mapped_column(String(255))
-    submission_key: Mapped[str] = mapped_column(String(128))
-    input_hash: Mapped[str] = mapped_column(String(64))
-    terms: Mapped[dict[str, Any]] = mapped_column(JSON)
-    provider_id: Mapped[str | None] = mapped_column(String(128), unique=True)
-    plan_id: Mapped[str | None] = mapped_column(String(128))
-    status: Mapped[str] = mapped_column(String(30), default="unknown")
-    checkout_status: Mapped[str | None] = mapped_column(String(10))
-    browser_state: Mapped[str] = mapped_column(String(20), default="open")
-    phase: Mapped[str] = mapped_column(String(20), default="reserved")
-    error: Mapped[str | None] = mapped_column(String(100))
-    debug_id: Mapped[str | None] = mapped_column(String(128))
 
 
 class Subscription(Record, Base):
@@ -129,6 +123,8 @@ class Transaction(Record, Base):
     kind: Mapped[str] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(20))
     provider_status: Mapped[str] = mapped_column(String(40))
+    # A failed response cannot release money that PayPal may still have refunded.
+    reservation_active: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     payment_id: Mapped[str | None] = mapped_column(ForeignKey("payments.id"))
     subscription_id: Mapped[str | None] = mapped_column(ForeignKey("subscriptions.id"), index=True)
     original_id: Mapped[str | None] = mapped_column(ForeignKey("transactions.id"))
@@ -156,6 +152,8 @@ class FinancialAction(Record, Base):
     input_hash: Mapped[str] = mapped_column(String(64))
     resource_id: Mapped[str] = mapped_column(String(128), index=True)
     status: Mapped[str] = mapped_column(String(20), default="reserved")
+    # Independent of the result label: retain a dispatched claim until resolved.
+    reservation_active: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
     error: Mapped[str | None] = mapped_column(String(100))
     debug_id: Mapped[str | None] = mapped_column(String(128))
 

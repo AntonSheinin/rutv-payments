@@ -1,13 +1,13 @@
 # Selected integration and merchant evidence
 
-Implementation branch: `refactor/local-direct-checkout`. Local only, at http://localhost:8100. No remote deployment, webhook, tunnel, Live enablement or real card test.
+Implementation branch: `refactor/solid-simplification`. Local only, at http://localhost:8100. No remote deployment, webhook, tunnel, Live enablement or real card test.
 
 ## Selected contracts
 
 | Feature | Contract |
 | --- | --- |
 | One-time card checkout | JS SDK v6 paypal-guest-payments, PayPal-hosted guest overlay, one PayPal basic-card button as Submit |
-| Backend collection | Orders v2 CAPTURE; immutable attempt custom_id, explicit merchant, exact currency/amount; one server capture after verified approval |
+| Backend collection | Orders v2 CAPTURE; immutable payment provider_correlation as custom_id, explicit merchant, exact currency/amount; one server capture after verified approval |
 | Callbacks | SDK onApprove -> authenticated/CSRF outcome POST; cancellation/error/onWarn ends the session and returns to fail page; no SDK restart |
 | Subscriptions | Catalog Products + Subscriptions v1; one explicit product/plan/subscription sequence per attempt; v6 paypal-subscriptions popup started from Submit with an asynchronous subscription-ID promise, shared outcome handling, separate term verification and no Orders capture |
 | Refunds | Payments v2 capture refunds; exact amount, 180-day local cutoff, reservations and stable identity |
