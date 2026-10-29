@@ -72,7 +72,7 @@ time and the provider's refresh time; neither promises a real-time balance.
 
 ## Local configuration and diagnostics
 
-Keep .env and .local-access.json private. AUTH_USERS entries contain only password_hash; API_KEYS entries only sha256. All authenticated identities have the same access. Preserve password hashes/merchant/client credentials when editing configuration; use single-quoted JSON values in .env so Compose does not interpolate Argon2 dollar signs. Restart after configuration changes.
+Keep .env.dev, .env.prod and .local-access.json private. AUTH_USERS entries contain only password_hash; API_KEYS entries only sha256. All authenticated identities have the same access. Preserve password hashes/merchant/client credentials when editing configuration; use single-quoted JSON values in the selected dotenv file so Compose does not interpolate Argon2 dollar signs. Restart after configuration changes.
 
 INFO logs safe lifecycle/action identities; DEBUG adds route-template and provider timing. Do not enable HTTP-library or SQL-parameter logging. Supply PayPal's safe debug ID to support when provider errors need investigation. Do not copy raw provider responses, authorization headers, customer data or approval/return queries into logs.
 
@@ -94,7 +94,7 @@ the resulting financial state rather than repeating exception traces. Startup
 validation hides input values. Authentication failures, SQL errors and provider
 diagnostics never log passwords, tokens, bound SQL parameters or raw payloads.
 
-Bind the API to loopback, leave Compose PostgreSQL unpublished, use localhost consistently and keep health/OpenAPI/business routes authenticated. No public ingress or certificate/tunnel configuration is required for this selected local Sandbox flow. Keep Sandbox and live databases separate and retain the explicit live gate. Never perform live financial actions as routine verification.
+Bind the API to loopback, leave Compose PostgreSQL unpublished, use localhost consistently and keep health/OpenAPI/business routes authenticated. No public ingress or certificate/tunnel configuration is required for this selected local Sandbox flow. Keep Sandbox and live databases separate and select real payments explicitly with PAYPAL_ENVIRONMENT=live. Never perform live financial actions as routine verification.
 
 
 Checkout result navigation is bound to the initiating signed payment state,

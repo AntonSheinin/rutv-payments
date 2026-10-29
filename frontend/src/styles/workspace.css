@@ -100,7 +100,6 @@ nav button.active {
   height: 42px;
 }
 .environment {
-  text-transform: uppercase;
   font-size: 12px;
   letter-spacing: 0.8px;
   font-weight: 600;

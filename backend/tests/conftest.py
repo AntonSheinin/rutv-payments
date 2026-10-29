@@ -6,8 +6,8 @@ import os
 import httpx
 import pytest
 from app.auth import password_hash
-from app.config import Settings, get_settings
 from app.models import Base
+from app.settings import Settings, get_settings
 from sqlalchemy import MetaData, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -52,7 +52,7 @@ def migration_sessions(engine):
 def settings():
     return Settings(
         _env_file=None,
-        database_url=TEST_URL,
+        postgres_password="disposable-test-password",
         app_secret="test-secret-with-more-than-thirty-two-characters",
         auth_users={
             "admin": {
@@ -63,13 +63,19 @@ def settings():
             },
         },
         api_keys={"test": {"sha256": hashlib.sha256(b"test-api-key").hexdigest()}},
+        log_level="INFO",
+        allowed_ip=None,
         allowed_origins=["http://testserver"],
         cookie_secure=False,
+        paypal_environment="sandbox",
         paypal_client_id="test-client",
         paypal_client_secret="test-secret",
         paypal_merchant_id="MERCHANT",
         paypal_return_url="http://localhost:8100/paypal/success",
         paypal_cancel_url="http://localhost:8100/paypal/fail",
+        maximum_amount="1000000.00",
+        auto_bill_outstanding=False,
+        payment_failure_threshold=2,
     )
 
 

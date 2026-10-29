@@ -5,7 +5,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
 from app.errors import ReconciliationError
 from app.models import (
     Payment,
@@ -16,6 +15,7 @@ from app.normalize import (
     subscription,
     transaction,
 )
+from app.settings import Settings
 
 
 def verify_order(payment: Payment, data: dict[str, Any], settings: Settings) -> dict[str, Any]:

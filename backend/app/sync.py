@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
 from app.errors import ReconciliationError
 from app.models import (
     FinancialAction,
@@ -30,6 +29,7 @@ from app.normalize import (
 )
 from app.paypal import PayPal, PayPalError, provider_id
 from app.schemas import CURRENCIES, SyncInput
+from app.settings import Settings
 from app.storage import required
 from app.verification import ingest_order, verify_subscription
 

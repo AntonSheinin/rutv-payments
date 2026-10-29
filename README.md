@@ -24,23 +24,27 @@ merchant's separate List Balances permission and may lag by up to three hours.
 
 See [CHANGELOG.md](CHANGELOG.md) for the dated project history.
 
+Manual GitHub deployment to `hetzner2` is documented in
+[deployment setup](docs/DEPLOYMENT.md). It uses the same Compose file as development,
+server-only runtime secrets and a manually triggered workflow; pushes do not deploy.
+
 See [operations](docs/OPERATIONS.md) for financial rules, [integration](docs/INTEGRATION.md) for provider contracts and remaining merchant checks, and [verification](docs/VERIFICATION.md) for current validation results.
 
 ## Run locally
 
-The service runs only in **Linux Docker containers on Ubuntu**, using Docker Compose at **http://localhost:8100**. Start it with `docker compose up --build -d`. Its `payments-db` volume contains the restored existing records. Compose uses the `db` service for PostgreSQL and configures the API's database connection.
+The service runs only in **Linux Docker containers on Ubuntu**, using Docker Compose at **http://localhost:8100**. Start it with `docker compose --env-file .env.dev up --build -d`. Its `payments-db` volume contains the restored existing records. Compose uses the `db` service for PostgreSQL and configures the API's database connection.
 
-Install Docker Engine and Docker Compose on Ubuntu. Development checks use Python 3.14, uv and Node 22+; PostgreSQL 17 runs in the database container. The ignored `.env` and `.local-access.json` contain this workspace's existing configuration/login; never commit them. New installations use `.env.example`. `AUTH_USERS` contains username-to-password_hash objects; `API_KEYS` contains name-to-sha256 objects. There are no access roles. Quote JSON environment values with single quotes so Compose preserves dollar signs in Argon2 hashes.
+Install Docker Engine and Docker Compose on Ubuntu. Development checks use Python 3.14, uv and Node 22+; PostgreSQL 17 runs in the database container. The ignored `.env.dev`, `.env.prod` and `.local-access.json` contain this workspace's existing configuration/login; never commit them. New installations use `.env.example`. `AUTH_USERS` contains username-to-password_hash objects; `API_KEYS` contains name-to-sha256 objects. There are no access roles. Quote JSON environment values with single quotes so Compose preserves dollar signs in Argon2 hashes.
 
 ```sh
-docker compose up --build -d
+docker compose --env-file .env.dev up --build -d
 ```
 
 After changing the source, rebuild and recreate the API to serve the updated
 frontend and backend:
 
 ```sh
-docker compose up -d --build api
+docker compose --env-file .env.dev up -d --build api
 ```
 
 A container restart alone reuses the existing image and its previously built UI.
@@ -48,7 +52,31 @@ Refresh the browser after the rebuilt API starts. The database volume is preserv
 
 Open **http://localhost:8100**. Use localhost consistently for the app and PayPal returns. API startup applies migrations and obtains singleton database ownership. Run one Uvicorn process. There is no worker, periodic polling, webhook, scheduled retry or startup replay.
 
-For a fresh Compose installation, configure `.env` and `POSTGRES_PASSWORD`, then run `docker compose up --build -d`. Only `api` and `db` are defined. The API binds to loopback; the database port is unpublished. The image runs as UID/GID 10001. Its build explicitly reinstalls the local package to avoid stale cached application wheels, following [uv's local-package caching rules](https://docs.astral.sh/uv/concepts/cache/). No Nginx, remote deployment or tunnel is needed.
+For a fresh Compose installation, configure `.env.dev` and `POSTGRES_PASSWORD`, then run `docker compose --env-file .env.dev up --build -d`. Only `api` and `db` are defined. The API binds to loopback; the database port is unpublished. The image runs as UID/GID 10001. Its build explicitly reinstalls the local package to avoid stale cached application wheels, following [uv's local-package caching rules](https://docs.astral.sh/uv/concepts/cache/). No Nginx, remote deployment or tunnel is needed.
+
+`backend/app/settings.py` validates all application settings with no fallback values.
+One `docker-compose.yml` serves both environments. Pass `--env-file .env.dev`
+for local builds or `--env-file .env.prod` for production; Compose passes the
+selected settings to the API and database. Production deployment pulls and tags
+the built image, then uses `up --no-build`. There is no implicit `.env` file.
+All profiles contain the same
+parameters documented in `.env.example`; explicit empty values are allowed only
+where documented. Private `.env.dev` and `.env.prod` contain parameter assignments
+only; comments remain in `.env.example`. The prepared live profile still needs
+account hashes, HTTPS URLs and the trusted proxy IP before use.
+
+The frontend path is fixed at `/service/frontend/dist`. Production integrations
+use the public HTTPS API with Bearer keys, independently of Docker networks;
+browser access remains restricted to the configured staff IP. The manual deployment
+workflow selects its built image automatically, without an image env parameter.
+
+Database configuration is only `POSTGRES_PASSWORD`, shared by PostgreSQL and the
+API. The application constructs its connection URL using fixed host `db`, port
+`5432`, username `payments` and database `payments`; no `DATABASE_URL` setting is
+needed. SQLAlchemy handles password characters without manual URL escaping.
+Keep the password stable for an existing database volume: changing the env file
+does not change the database's stored password. Tests and CLI migration checks use
+only a dedicated `payments_test*` database through `TEST_DATABASE_URL`.
 
 Alembic applies the baseline and subsequent schema migrations at startup. The unified register migration preserves existing payment/provider/ledger identities and links. Tests and container smoke checks use separate `payments_test*` databases.
 

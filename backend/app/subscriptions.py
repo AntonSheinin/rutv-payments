@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal, checkout_proof
-from app.config import Settings
 from app.errors import ReconciliationError
 from app.models import (
     FinancialAction,
@@ -19,6 +18,7 @@ from app.models import (
 )
 from app.normalize import set_subscription_status
 from app.paypal import PayPal, PayPalError, definite_rejection, failure_code, provider_id
+from app.settings import Settings
 from app.storage import action_key, audit, fingerprint, required
 
 log = logging.getLogger("payments.subscriptions")

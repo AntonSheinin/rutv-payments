@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal, checkout_proof
-from app.config import Settings
 from app.errors import ReconciliationError
 from app.models import Payment
 from app.normalize import (
@@ -19,6 +18,7 @@ from app.normalize import (
 )
 from app.paypal import PayPal, PayPalError, failure_code, provider_id
 from app.schemas import OutcomeInput, SubmitInput
+from app.settings import Settings
 from app.storage import action_key, audit, fingerprint, required
 from app.subscriptions import create_subscription
 from app.verification import ingest_order, verify_order, verify_subscription

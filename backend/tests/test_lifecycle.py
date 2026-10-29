@@ -1,5 +1,8 @@
 """Single-process lifecycle without background payment tasks or startup replay."""
 
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +16,20 @@ from app.lifecycle import lifespan
 from app.models import Base
 from fastapi import FastAPI
 from sqlalchemy import MetaData, inspect, text
+
+
+def test_migration_cli_rejects_application_database_test_override() -> None:
+    """A CLI test override must fail before connecting to an application database."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "TEST_DATABASE_URL": "postgresql+psycopg://unused@localhost/payments"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "TEST_DATABASE_URL requires a dedicated payments_test database" in result.stderr
 
 
 async def test_startup_no_worker_and_loss_of_ownership_blocks_mutations(client, headers, provider):

@@ -6,13 +6,13 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
 from app.errors import ReconciliationError
 from app.models import SyncState, now
 from app.normalize import money, timestamp
 from app.paypal import PayPal
 from app.responses import BalanceAmount, BalanceSnapshot
 from app.schemas import CURRENCIES
+from app.settings import Settings
 
 log = logging.getLogger("payments.balance")
 BALANCE_SCOPE = "paypal_balance"

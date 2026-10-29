@@ -196,7 +196,7 @@ export function App() {
             </div>
             <div className="page-actions">
               <span className={"environment " + options.environment}>
-                {options.environment}
+                {options.environment === "live" ? "Live" : "Sandbox"}
               </span>
               {view === "dashboard" && !showResult && (
                 <button

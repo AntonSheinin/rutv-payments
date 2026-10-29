@@ -9,10 +9,10 @@ from fastapi import FastAPI
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import text
 
-from app.config import get_settings
 from app.db import migrate_database, session_factory
 from app.logging_config import configure_logging
 from app.paypal import PayPal
+from app.settings import get_settings
 from app.storage import ensure_environment
 
 log = logging.getLogger("payments.lifecycle")

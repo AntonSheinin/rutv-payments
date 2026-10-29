@@ -2,6 +2,27 @@
 
 Changes are grouped by commit date, newest first.
 
+## 2026-10-29 — Production configuration and controlled deployment
+
+### Added
+
+- Staff browser access restricted by `ALLOWED_IP`, while trusted integrations can use valid Bearer API keys independently of the staff address.
+- A manually triggered GitHub deployment workflow that checks the selected commit, publishes its image and deploys an immutable digest through verified SSH. Pushes do not deploy.
+- Deployment readiness checks, profile-isolation tests and production setup documentation.
+
+### Changed
+
+- Replaced `config.py` with `settings.py`; all configuration values are explicit and validated from the selected environment. `.env.example` documents every parameter, while private development and production profiles stay outside Git.
+- Development and production share one Docker Compose file, selecting `.env.dev` or `.env.prod`. Production runs the prebuilt image, keeps PostgreSQL private and preserves its data volume.
+- Simplified database configuration to one `POSTGRES_PASSWORD`; the backend constructs the fixed Compose database connection without exposing credentials to the frontend.
+- `PAYPAL_ENVIRONMENT` alone selects Sandbox or live payments, and the frontend displays the matching Sandbox/Live badge. Subscription billing policies are explicitly configured.
+- Fixed the frontend image path in code and retained explicit proxy trust, secure-cookie and browser-origin checks.
+
+### Verification
+
+- Backend settings/authentication and deployment tests, Chromium checks for both environment labels, lint, formatting and type checks passed. Earlier full-suite and migration results are recorded in [verification](docs/VERIFICATION.md).
+- Container builds and disposable Compose smoke tests passed, including startup migrations, authenticated readiness and permitted-source frontend access. No production deployment or live financial action was performed.
+
 ## 2026-10-25 — Dashboard balances and subscription reporting
 
 ### Added

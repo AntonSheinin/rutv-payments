@@ -9,8 +9,8 @@ from typing import Any
 
 import httpx
 
-from app.config import Settings
 from app.errors import ReconciliationError
+from app.settings import Settings
 
 log = logging.getLogger("payments.paypal")
 

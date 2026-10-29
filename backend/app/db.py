@@ -17,7 +17,7 @@ from sqlalchemy.exc import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import Settings
+from app.settings import Settings
 
 log = logging.getLogger("payments.db")
 

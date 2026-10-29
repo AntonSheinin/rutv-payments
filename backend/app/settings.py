@@ -1,36 +1,44 @@
-"""Validated environment settings and explicit production launch gates."""
+"""Required settings from the selected dotenv file, injected by Docker Compose."""
 
 from decimal import Decimal
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, IPvAnyAddress, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 
 class Settings(BaseSettings):
-    """Validated process configuration loaded from environment variables and .env."""
+    """Validate explicit configuration; every field must be supplied by the environment."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
+    # Compose selects .env.dev or .env.prod. Never implicitly read another profile.
+    # Extra values belong to Compose/PostgreSQL/Uvicorn, sharing the same dotenv file.
+    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
-    database_url: str
+    postgres_password: SecretStr = Field(min_length=1)
     app_secret: str = Field(min_length=32)
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    auth_users: dict[str, dict[str, str]] = Field(default_factory=dict)
-    api_keys: dict[str, dict[str, str]] = Field(default_factory=dict)
-    cookie_secure: bool = True
-    allowed_origins: list[str] = ["http://localhost:8100"]
-    paypal_environment: Literal["sandbox", "live"] = "sandbox"
-    paypal_client_id: str = ""
-    paypal_client_secret: str = ""
-    paypal_merchant_id: str = ""
-    paypal_return_url: str = "http://localhost:8100/paypal/success"
-    paypal_cancel_url: str = "http://localhost:8100/paypal/fail"
-    live_enabled: bool = False
-    maximum_amount: Decimal = Field(default=Decimal("1000000.00"), gt=0)
-    auto_bill_outstanding: bool = False
-    payment_failure_threshold: int = 2
-    frontend_dir: str = "frontend/dist"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    auth_users: dict[str, dict[str, str]]
+    api_keys: dict[str, dict[str, str]]
+    allowed_ip: IPvAnyAddress | None
+    cookie_secure: bool
+    allowed_origins: list[str] = Field(min_length=1)
+    paypal_environment: Literal["sandbox", "live"]
+    paypal_client_id: str
+    paypal_client_secret: str
+    paypal_merchant_id: str
+    paypal_return_url: str = Field(min_length=1)
+    paypal_cancel_url: str = Field(min_length=1)
+    maximum_amount: Decimal = Field(gt=0)
+    auto_bill_outstanding: bool
+    payment_failure_threshold: int = Field(ge=0, le=999)
+
+    @field_validator("allowed_ip", mode="before")
+    @classmethod
+    def explicit_unrestricted_staff_ip(cls, value: object) -> object:
+        """An explicitly empty Sandbox value disables IP filtering; omission is invalid."""
+        return None if value == "" else value
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -50,11 +58,25 @@ class Settings(BaseSettings):
             if set(key) != {"sha256"} or len(key["sha256"]) != 64:
                 raise ValueError("API_KEYS entries contain only a SHA-256 token hash")
         if self.paypal_environment == "live":
-            if not self.live_enabled or not self.cookie_secure:
-                raise ValueError("Live mode requires LIVE_ENABLED and secure cookies")
+            if self.auth_users and self.allowed_ip is None:
+                raise ValueError("Live staff access requires ALLOWED_IP")
+            if not self.cookie_secure:
+                raise ValueError("Live mode requires secure cookies")
             if not self.paypal_configured:
                 raise ValueError("Live PayPal configuration is incomplete")
         return self
+
+    @property
+    def database_url(self) -> URL:
+        """Connect to the fixed Compose database without escaping or duplicating its password."""
+        return URL.create(
+            "postgresql+psycopg",
+            username="payments",
+            password=self.postgres_password.get_secret_value(),
+            host="db",
+            port=5432,
+            database="payments",
+        )
 
     @property
     def paypal_base_url(self) -> str:
@@ -79,5 +101,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Load and cache environment settings once per process."""
+    """Load and cache the selected profile's injected environment once per process."""
     return Settings()  # type: ignore[call-arg]  # Settings loads required fields from the environment.

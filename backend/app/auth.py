@@ -5,15 +5,16 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from itsdangerous import BadData, URLSafeTimedSerializer
 from pwdlib import PasswordHash
 
-from app.config import Settings, get_settings
 from app.models import Payment
 from app.schemas import LoginInput, SessionOptions, StaffSession
+from app.settings import Settings, get_settings
 
 password_hash = PasswordHash.recommended()
 log = logging.getLogger("payments.auth")
@@ -31,6 +32,20 @@ class Principal:
     csrf: str = ""
 
 
+def require_staff_ip(request: Request, settings: Config) -> None:
+    """Restrict browser access using the ASGI peer, never arbitrary forwarded headers."""
+    if settings.allowed_ip is None:
+        return
+    try:
+        source = ip_address(request.client.host) if request.client else None
+    except ValueError:
+        source = None
+    # Only Uvicorn's explicitly trusted proxy handling may replace the socket peer.
+    if source != settings.allowed_ip:
+        log.warning("staff_access_rejected reason=source_ip")
+        raise HTTPException(403, "Staff access is not allowed from this IP")
+
+
 def authenticate(request: Request, settings: Config) -> Principal:
     """Resolve an API key or signed session and enforce browser CSRF protection."""
     authorization = request.headers.get("authorization", "")
@@ -41,6 +56,7 @@ def authenticate(request: Request, settings: Config) -> Principal:
                 return Principal(name)
         log.debug("authentication_rejected reason=invalid_bearer")
         raise HTTPException(401, "Invalid credentials")
+    require_staff_ip(request, settings)
     try:
         data = request.app.state.session_signer.loads(
             request.cookies.get("staff_session", ""), max_age=SESSION_SECONDS
@@ -89,7 +105,7 @@ def session_response(user: Principal, settings: Settings) -> StaffSession:
     )
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(require_staff_ip)])
 def login(
     data: LoginInput,
     request: Request,

@@ -17,9 +17,8 @@ from sqlalchemy.exc import (
     SQLAlchemyError,
 )
 
-from app.auth import User, authenticate
+from app.auth import User, authenticate, require_staff_ip
 from app.auth import router as auth_router
-from app.config import get_settings
 from app.db import Db, Mutation
 from app.errors import ReconciliationError
 from app.lifecycle import lifespan
@@ -30,6 +29,7 @@ from app.routes.reporting import router as reporting_router
 from app.routes.subscriptions import router as subscriptions_router
 
 log = logging.getLogger("payments.api")
+FRONTEND_DIR = Path("/service/frontend/dist")
 
 
 app = FastAPI(
@@ -158,21 +158,21 @@ async def ready(user: User, db: Db, guard: Mutation) -> dict[str, str]:
     return {"status": "ready"}
 
 
-@app.get("/")
-@app.get("/paypal/success")
-@app.get("/paypal/fail")
+@app.get("/", dependencies=[Depends(require_staff_ip)])
+@app.get("/paypal/success", dependencies=[Depends(require_staff_ip)])
+@app.get("/paypal/fail", dependencies=[Depends(require_staff_ip)])
 def frontend() -> FileResponse:
     """Serve the local app/return pages; GET never changes financial state."""
-    path = Path(get_settings().frontend_dir) / "index.html"
+    path = FRONTEND_DIR / "index.html"
     if not path.is_file():
         raise HTTPException(503, "Build the frontend first")
     return FileResponse(path)
 
 
-@app.get("/assets/{asset:path}")
+@app.get("/assets/{asset:path}", dependencies=[Depends(require_staff_ip)])
 def assets(asset: str) -> FileResponse:
     """Serve only built static assets contained within the assets directory."""
-    base = (Path(get_settings().frontend_dir) / "assets").resolve()
+    base = (FRONTEND_DIR / "assets").resolve()
     path = (base / asset).resolve()
     if not path.is_relative_to(base) or not path.is_file():
         raise HTTPException(404, "Asset not found")

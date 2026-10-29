@@ -1,5 +1,8 @@
 name: Checks
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_call:
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -26,7 +29,8 @@ jobs:
           sh /tmp/uv-install.sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: uv sync --locked --extra dev
-      - run: uv run --locked --extra dev ruff check backend && uv run --locked --extra dev ruff format --check backend && uv run --locked --extra dev mypy backend/app
+      - run: uv run --locked --extra dev ruff check backend deployment && uv run --locked --extra dev ruff format --check backend deployment && uv run --locked --extra dev mypy backend/app
+      - run: bash -n deployment/dispatch.sh deployment/deploy.sh && python -m unittest discover -s deployment/tests -v
       - run: npm ci && npm run build && npm run format:check
         working-directory: frontend
       - name: Check migrations on an empty database
@@ -34,10 +38,6 @@ jobs:
           uv run --locked --extra dev alembic upgrade head
           uv run --locked --extra dev alembic check
         env:
-          DATABASE_URL: postgresql+psycopg://payments:local-development-only@127.0.0.1:54329/payments_test
-          # Disposable migration-only settings; no .env or staff account is generated.
-          APP_SECRET: ci-migration-secret-for-disposable-tests-only
-          AUTH_USERS: '{}'
-          API_KEYS: '{"ci":{"sha256":"5dcd9553af19c685fb04f237ded0d4e1c1cbc5383da41c01d6139eab657ad50d"}}'
-          PAYPAL_ENVIRONMENT: sandbox
+          # Alembic rejects overrides whose database name does not start with payments_test.
+          TEST_DATABASE_URL: postgresql+psycopg://payments:local-development-only@127.0.0.1:54329/payments_test
       - run: uv run --locked --extra dev pytest -q

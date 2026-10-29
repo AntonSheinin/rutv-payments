@@ -9,8 +9,8 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
 from app.models import AuditEvent, Record, SyncState
+from app.settings import Settings
 
 
 async def ensure_environment(db: AsyncSession, settings: Settings) -> None:
