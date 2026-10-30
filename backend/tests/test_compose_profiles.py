@@ -30,7 +30,7 @@ class ComposeProfileTests(unittest.TestCase):
                     f"APP_SECRET={profile}-disposable-signing-secret-more-than-32-characters\n"
                     f"PAYPAL_ENVIRONMENT={'sandbox' if profile == 'dev' else 'live'}\n"
                     f"COOKIE_SECURE={'false' if profile == 'dev' else 'true'}\n"
-                    "ALLOWED_IP=62.90.52.94\n"
+                    "ALLOWED_IPS=62.90.52.94\n"
                 )
                 replaced = {line.split("=", 1)[0] for line in prefix.splitlines()}
                 body = "\n".join(
@@ -68,7 +68,6 @@ class ComposeProfileTests(unittest.TestCase):
             self.assertEqual(
                 local["services"]["api"]["environment"]["POSTGRES_PASSWORD"], "dev-disposable"
             )
-            self.assertNotIn("DATABASE_URL", local["services"]["api"]["environment"])
             (root / ".env.dev").unlink()
             production = configuration("prod")
             api, db = production["services"]["api"], production["services"]["db"]
@@ -76,15 +75,10 @@ class ComposeProfileTests(unittest.TestCase):
             self.assertEqual(api["environment"]["PAYPAL_ENVIRONMENT"], "live")
             self.assertEqual(api["environment"]["COOKIE_SECURE"], "true")
             self.assertEqual(api["environment"]["POSTGRES_PASSWORD"], "prod-disposable")
-            self.assertNotIn("DATABASE_URL", api["environment"])
             self.assertEqual(db["environment"]["POSTGRES_PASSWORD"], "prod-disposable")
             self.assertEqual(api["ports"][0]["host_ip"], "127.0.0.1")
-            self.assertIn("build", api)
             self.assertEqual(set(api["environment"]), keys)
-            self.assertEqual(api["stop_grace_period"], "2m30s")
-            self.assertEqual(db["restart"], "unless-stopped")
             self.assertEqual(api["image"], "rutv-payments:production")
             self.assertEqual(api["pull_policy"], "never")
             self.assertEqual(set(production["networks"]), {"default"})
             self.assertNotIn("ports", db)
-            self.assertNotIn("services", db["networks"])

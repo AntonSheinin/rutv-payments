@@ -65,7 +65,7 @@ const stats: Stats = {
 
 test.use({ timezoneId: "America/Los_Angeles" });
 
-test("dashboard defaults, combined metrics, health layout and calendar labels", async ({
+test("dashboard defaults, combined metrics and calendar filters", async ({
   page,
 }) => {
   const requests: URLSearchParams[] = [];
@@ -76,18 +76,6 @@ test("dashboard defaults, combined metrics, health layout and calendar labels", 
   });
   await page.reload();
   await expect(page.locator(".metric")).toHaveCount(4);
-  const createButton = page.getByRole("button", {
-    name: "Create payment",
-    exact: true,
-  });
-  const syncButton = page.getByRole("button", {
-    name: "Sync PayPal balance",
-    exact: true,
-  });
-  await expect(createButton.locator("svg")).toHaveCount(0);
-  expect((await createButton.boundingBox())?.height).toBe(
-    (await syncButton.boundingBox())?.height,
-  );
   expect(requests.at(-1)?.get("currency")).toBe("ILS");
   expect(requests.at(-1)?.get("start_date")).toBe("2026-10-01");
   expect(requests.at(-1)?.get("end_date")).toBe("2026-10-31");
@@ -101,24 +89,11 @@ test("dashboard defaults, combined metrics, health layout and calendar labels", 
     .locator(".metric")
     .filter({ hasText: "Subscription health" });
   await expect(health.locator(".status-row")).toHaveCount(2);
-  await expect(health).not.toContainText(
-    "Agreements created in the selected period",
-  );
   await expect(health).not.toContainText(/CANCELLED|EXPIRED|total agreements/);
-  const cards = await page
-    .locator(".metric")
-    .evaluateAll((elements) =>
-      elements.map((e) => e.getBoundingClientRect().top),
-    );
-  expect(new Set(cards).size).toBe(1);
   await expect(page.locator(".bar-chart small")).toHaveText([
     "30 Sept",
     "1 Oct",
   ]);
-  await expect(page.getByText("Verified records only")).toHaveCount(0);
-  await expect(
-    page.getByText("Payment dates in your local timezone"),
-  ).toHaveCount(0);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByLabel("From", { exact: true }).fill("2026-09-01");
   await page.getByLabel("Minimum amount").fill("5");

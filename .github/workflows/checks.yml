@@ -29,8 +29,7 @@ jobs:
           sh /tmp/uv-install.sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: uv sync --locked --extra dev
-      - run: uv run --locked --extra dev ruff check backend deployment && uv run --locked --extra dev ruff format --check backend deployment && uv run --locked --extra dev mypy backend/app
-      - run: bash -n deployment/dispatch.sh deployment/deploy.sh && python -m unittest discover -s deployment/tests -v
+      - run: uv run --locked --extra dev ruff check backend && uv run --locked --extra dev ruff format --check backend && uv run --locked --extra dev mypy backend/app
       - run: npm ci && npm run build && npm run format:check
         working-directory: frontend
       - name: Check migrations on an empty database

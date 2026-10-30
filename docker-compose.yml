@@ -23,7 +23,7 @@ services:
       - LOG_LEVEL
       - AUTH_USERS
       - API_KEYS
-      - ALLOWED_IP
+      - ALLOWED_IPS
       - COOKIE_SECURE
       - ALLOWED_ORIGINS
       - PAYPAL_ENVIRONMENT

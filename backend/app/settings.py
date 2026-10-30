@@ -2,43 +2,97 @@
 
 from decimal import Decimal
 from functools import lru_cache
-from typing import Literal, Self
+from typing import Annotated, Literal, Self, TypedDict
 
-from pydantic import Field, IPvAnyAddress, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from argon2 import extract_parameters
+from argon2.exceptions import InvalidHashError
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    IPvAnyAddress,
+    SecretStr,
+    field_validator,
+    model_validator,
+    with_config,
+)
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import URL
+
+
+def argon2_hash(value: str) -> str:
+    """Reject malformed configured hashes before a staff login reaches password verification."""
+    try:
+        extract_parameters(value)
+    except InvalidHashError:
+        raise ValueError("Staff password hashes must use encoded Argon2 format") from None
+    return value
+
+
+@with_config(ConfigDict(extra="forbid"))
+class StaffCredentials(TypedDict):
+    """One configured staff password hash, with no unrelated credential fields."""
+
+    password_hash: Annotated[str, AfterValidator(argon2_hash)]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ApiKeyCredentials(TypedDict):
+    """One integration's lowercase SHA-256 token digest."""
+
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+def origin(value: str) -> str:
+    """Validate and normalize a browser origin without paths, credentials or queries."""
+    url = HttpUrl(value)
+    if (
+        url.username is not None
+        or url.password is not None
+        or url.path not in {None, "/"}
+        or url.query is not None
+        or url.fragment is not None
+    ):
+        raise ValueError("Browser origins must contain only scheme, host and optional port")
+    return str(url).removesuffix("/")
+
+
+def comma_separated(value: object) -> object:
+    """Split environment lists before Pydantic validates each item."""
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",")] if value.strip() else []
+    return value
 
 
 class Settings(BaseSettings):
     """Validate explicit configuration; every field must be supplied by the environment."""
 
     # Compose selects .env.dev or .env.prod. Never implicitly read another profile.
-    # Extra values belong to Compose/PostgreSQL/Uvicorn, sharing the same dotenv file.
-    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
+    # The same profile also configures PostgreSQL and Uvicorn directly.
+    model_config = SettingsConfigDict(extra="forbid", hide_input_in_errors=True)
 
     postgres_password: SecretStr = Field(min_length=1)
     app_secret: str = Field(min_length=32)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-    auth_users: dict[str, dict[str, str]]
-    api_keys: dict[str, dict[str, str]]
-    allowed_ip: IPvAnyAddress | None
+    auth_users: dict[Annotated[str, Field(min_length=1)], StaffCredentials]
+    api_keys: dict[Annotated[str, Field(min_length=1)], ApiKeyCredentials]
+    allowed_ips: Annotated[list[IPvAnyAddress], NoDecode, BeforeValidator(comma_separated)]
     cookie_secure: bool
-    allowed_origins: list[str] = Field(min_length=1)
+    allowed_origins: Annotated[
+        list[Annotated[str, AfterValidator(origin)]], NoDecode, BeforeValidator(comma_separated)
+    ] = Field(min_length=1)
+    forwarded_allow_ips: Annotated[list[IPvAnyAddress], NoDecode, BeforeValidator(comma_separated)]
     paypal_environment: Literal["sandbox", "live"]
     paypal_client_id: str
     paypal_client_secret: str
     paypal_merchant_id: str
-    paypal_return_url: str = Field(min_length=1)
-    paypal_cancel_url: str = Field(min_length=1)
+    paypal_return_url: HttpUrl
+    paypal_cancel_url: HttpUrl
     maximum_amount: Decimal = Field(gt=0)
     auto_bill_outstanding: bool
     payment_failure_threshold: int = Field(ge=0, le=999)
-
-    @field_validator("allowed_ip", mode="before")
-    @classmethod
-    def explicit_unrestricted_staff_ip(cls, value: object) -> object:
-        """An explicitly empty Sandbox value disables IP filtering; omission is invalid."""
-        return None if value == "" else value
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -51,15 +105,9 @@ class Settings(BaseSettings):
         """Reject anonymous configuration and incomplete or insecure live deployments."""
         if not self.auth_users and not self.api_keys:
             raise ValueError("Configure AUTH_USERS or API_KEYS; anonymous access is disabled")
-        for user in self.auth_users.values():
-            if set(user) != {"password_hash"} or not user["password_hash"]:
-                raise ValueError("AUTH_USERS entries contain only password_hash")
-        for key in self.api_keys.values():
-            if set(key) != {"sha256"} or len(key["sha256"]) != 64:
-                raise ValueError("API_KEYS entries contain only a SHA-256 token hash")
         if self.paypal_environment == "live":
-            if self.auth_users and self.allowed_ip is None:
-                raise ValueError("Live staff access requires ALLOWED_IP")
+            if self.auth_users and not self.allowed_ips:
+                raise ValueError("Live staff access requires ALLOWED_IPS")
             if not self.cookie_secure:
                 raise ValueError("Live mode requires secure cookies")
             if not self.paypal_configured:
@@ -89,14 +137,8 @@ class Settings(BaseSettings):
 
     @property
     def paypal_configured(self) -> bool:
-        """Report whether credentials, merchant identity and return URLs are configured."""
-        return bool(
-            self.paypal_client_id
-            and self.paypal_client_secret
-            and self.paypal_merchant_id
-            and self.paypal_return_url
-            and self.paypal_cancel_url
-        )
+        """Report credential availability; callback URLs are always validated settings."""
+        return bool(self.paypal_client_id and self.paypal_client_secret and self.paypal_merchant_id)
 
 
 @lru_cache

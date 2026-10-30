@@ -34,14 +34,14 @@ class Principal:
 
 def require_staff_ip(request: Request, settings: Config) -> None:
     """Restrict browser access using the ASGI peer, never arbitrary forwarded headers."""
-    if settings.allowed_ip is None:
+    if not settings.allowed_ips:
         return
     try:
         source = ip_address(request.client.host) if request.client else None
     except ValueError:
         source = None
     # Only Uvicorn's explicitly trusted proxy handling may replace the socket peer.
-    if source != settings.allowed_ip:
+    if source not in settings.allowed_ips:
         log.warning("staff_access_rejected reason=source_ip")
         raise HTTPException(403, "Staff access is not allowed from this IP")
 

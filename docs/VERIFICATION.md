@@ -1,9 +1,287 @@
 # Current verification
 
-Last verified: 2026-10-29. Source branch: `master`.
+Last verified: 2026-10-30. Source branch: `main`.
 The service runs in Linux Docker containers on Ubuntu through Docker Compose.
 The local Compose API was rebuilt and recreated from this branch on 2026-10-25;
 its existing database volume was preserved. No remote deployment was performed.
+
+## Commit validation and repository cleanup, 2026-10-30
+
+- Updated README and changelog for multiple staff addresses, consistent list
+  formatting, Pydantic validation, container-local readiness and deployment steps
+  contained in the manual GitHub workflow. Removed the empty deployment/tests
+  and deployment directories after their tracked scripts/tests were moved or removed.
+- Reviewed both ignore files. Private profiles, local access credentials and old
+  health keys remain excluded; .env.example remains tracked. Coverage artifacts
+  are excluded from Git and Docker. Docker also excludes frontend browser tests
+  and nested dependency/test-result directories. A private-value scan of all
+  pending changes passed without displaying credentials.
+- All 210 backend tests and five subtests passed against the dedicated
+  payments_test_commit database. Ruff lint/format, mypy, Alembic upgrade/schema
+  comparison, npm clean install/build/format, actionlint and the final Docker build
+  passed. Both profile renders contain only api/db.
+- A disposable Compose project started the rebuilt API and database, applied
+  migrations, passed container-local readiness without an API key and served the
+  frontend with HTTP 200. Its containers, network and volume were removed. No
+  live provider calls, server changes or production deployments were performed.
+
+## Consistent comma-separated lists, 2026-10-30
+
+- ALLOWED_ORIGINS now uses the same comma-separated parsing as ALLOWED_IPS and
+  FORWARDED_ALLOW_IPS. Pydantic still validates and normalizes each origin and
+  requires at least one. Updated both local private profiles without changing
+  their permitted origins, plus the example and deployment documentation.
+- Both private profiles passed validation. One-off checks confirmed multiple
+  origins, whitespace trimming and trailing-slash normalization, and rejection
+  of empty lists, paths, empty entries and the previous JSON-array format.
+  Ruff lint/format, mypy and the five existing settings/Compose tests passed in
+  Linux Docker. Compose renders only api/db for both profiles. No deployment or
+  remote profile changes were performed.
+
+## Multiple allowed staff addresses, 2026-10-30
+
+- Renamed ALLOWED_IP to ALLOWED_IPS in settings, authentication, Compose, local
+  private profiles, the example and current deployment documentation. The value
+  accepts comma-separated IPv4/IPv6 addresses; Pydantic validates every address.
+  Empty still disables staff IP filtering only in Sandbox. Live staff access
+  requires a nonempty list. The production profile retains 62.90.52.94.
+- Verified staff login from both configured IPv4 addresses and a configured IPv6
+  address, and rejection of an unlisted source with a spoofed forwarding header.
+  Existing integration-key independence and private readiness checks passed.
+- Ruff lint/format, mypy and all 19 affected authentication/settings/Compose
+  tests passed in Linux Docker against payments_test_allowed_ips. Both private
+  profiles passed Pydantic validation and contain exactly the 18 model fields;
+  Compose renders only api/db for each profile. The disposable database and
+  network were removed. No server files, proxy settings or deployments changed.
+
+## Pydantic owns application configuration validation, 2026-10-29
+
+- All 18 application profile parameters are now fields of Settings, including
+  comma-separated Uvicorn proxy peers validated as IP addresses. Pydantic handles
+  required fields, types, numeric bounds, HTTP callback URLs, normalized browser
+  origins and credential-entry schemas. Staff hashes are parsed as encoded Argon2
+  values, API-key digests require lowercase SHA-256 format and credential entries
+  forbid extra fields. Unknown dotenv settings are rejected.
+- Removed manual credential-shape loops and redundant callback-presence checks.
+  Subscription payload construction explicitly serializes validated URL objects
+  to strings, preserving the provider contract. Application-specific anonymous
+  access and live-mode security rules remain Pydantic model validators.
+- Removed tests for required fields, simple numeric/empty-value bounds, template
+  metadata and the SQLAlchemy/SecretStr URL wrapper. The remaining settings tests
+  exercise application-specific IP/cookie gates and environment selection.
+  Compose profile-isolation and workflow failure tests remain because Pydantic
+  cannot verify which file Compose injects or the order of deployment actions.
+- Privately loaded both existing profiles through Settings and verified all 18
+  names match the model/template. One-off malformed credential, URL, origin,
+  proxy wildcard and unknown-setting checks were rejected without introducing
+  field-by-field unit tests. No private assignment values were changed/displayed.
+- All 206 backend tests and five subtests passed against the dedicated
+  payments_test_settings_validation database. Ruff lint/format, mypy and the
+  runtime/frontend image build passed. A disposable Compose project verified
+  startup migrations, a database password with special characters, internal
+  readiness and staff login with the validated settings. All test containers,
+  networks and volumes were removed. No deployment, server change or PayPal
+  call occurred; mocked tests do not establish live provider behavior.
+
+## Redundant and cosmetic test review, 2026-10-29
+
+- Inspected the backend test inventory and compared normalized bodies of all
+  115 remaining test functions; no exact duplicate bodies were found. Reviewed
+  overlapping settings, ownership, deployment and frontend scenarios separately,
+  since structural uniqueness alone does not establish useful coverage.
+- Removed the redundant ordinary-password URL case while retaining special
+  character handling and secret masking. Folded internal readiness after ownership
+  loss into the existing lifecycle test instead of repeating its setup.
+- Removed comment-placement/style checks, field metadata assertions duplicated
+  by missing-input validation, obsolete removed-setting/file assertions and
+  redundant shell parsing already exercised by execution of the inline workflow.
+  Kept manual-only workflow enforcement, failure ordering, profile isolation,
+  loopback security, timeouts and provider/security boundary checks.
+- Removed exact refund colors/margins/borders, duplicate visibility assertions,
+  dashboard icon/button-size/card-position checks and obsolete caption checks.
+  Environment checks now assert rendered Sandbox/Live text instead of CSS classes
+  or a particular text-transform rule. Financial UI actions and data assertions
+  remain covered.
+- The full backend suite passed: 212 tests and five subtests against the dedicated
+  payments_test_review database. Ruff lint/format and mypy passed. Its database
+  container/network were removed. No production or application code changed in
+  this review, and provider tests remain mocked rather than live verification.
+- All six affected Chromium scenarios passed: dashboard filters/balances, refund
+  eligibility/exact amounts/failure handling, and Sandbox/Live display. Frontend
+  build and formatting passed. An initial run through an HTTP container hostname
+  failed refund setup because crypto.randomUUID requires a secure context; the
+  successful rerun used the supported localhost origin without application changes.
+  The browser application used a fresh disposable database and dummy credentials;
+  its containers/network/volume and temporary source copy were removed. No PayPal
+  or production-server actions occurred.
+
+## Deployment owned entirely by GitHub Actions, 2026-10-29
+
+- Moved runner validation, temporary SSH credential handling, manifest transfer
+  and all remote deployment commands inline into .github/workflows/deploy.yml.
+  Removed standalone deployment scripts and moved their regression tests into
+  backend/tests. Only the Compose manifest is transferred; remote commands are
+  streamed directly from the workflow. The deployment folder is no longer part
+  of the repository. The default target is /home/anton/rutv-payments-service.
+- Preserved manual-only dispatch, CI gating, immutable image digests, pinned SSH
+  host verification, workflow/server locks, private server settings, singleton API
+  replacement and internal readiness before updating the successful-release link.
+  Updated checks and deployment docs; removed the obsolete Ruff target override.
+- All six workflow/Compose regression tests passed under pytest in Linux Docker.
+  Tests execute the actual inline shell with Docker/SSH command doubles and verify
+  success, readiness failure, preflight failure, manifest-only transfer, private
+  SSH file cleanup and manual-only triggering. They never contact a real server.
+  Actionlint, ShellCheck for both inline shell bodies, Ruff lint/format and mypy
+  passed. The image build and disposable Compose smoke passed startup readiness
+  and frontend HTTP access. Test resources were removed.
+- No GitHub workflow was dispatched, no server files/services were changed and
+  no payment deployment or PayPal calls occurred.
+
+## Cloudflare automatic renewal verified, 2026-10-29
+
+- Verified the supplied root-owned /etc/letsencrypt/cloudflare.ini token file
+  without displaying its value and enforced mode 0600. Certbot reconfigure
+  successfully tested staging issuance and saved dns-cloudflare authentication,
+  the credential path and a 60-second DNS propagation wait for rutv.co.il.
+- A second test using the saved settings passed with certbot renew --cert-name
+  rutv.co.il --dry-run --run-deploy-hooks --no-random-sleep-on-renew
+  --non-interactive. Its successful deploy hook validated and gracefully reloaded
+  Nginx. An initial dry run had entered a 401-second random scheduling delay;
+  that test process was gracefully stopped and rerun without the test delay.
+- Confirmed certbot.timer is enabled/active and uses certbot renew. Future due
+  renewals now automate DNS verification and reload Nginx without manual TXT
+  entry. Archived and removed the redundant old lampac reload hook after both
+  hooks passed the dry run; only the shared rutv-reload-nginx hook remains.
+- Verified trusted TLS for root/www/lampac/payments after the test. The live
+  certificate remains unchanged, expiring 2027-01-27 10:08:13 UTC; no staging
+  certificate was installed. Nginx remained active. No payment deployment,
+  container restart or PayPal call occurred. Earlier manual-renewal limitations
+  below describe the previous setup and have now been resolved.
+
+## Cloudflare automatic renewal preparation, 2026-10-29
+
+- The user subsequently selected Cloudflare API authentication. Reinstalled
+  python3-certbot-dns-cloudflare and created the empty root-owned credential file
+  /etc/letsencrypt/cloudflare.ini with mode 0600. Existing certbot.timer and the
+  successful-renewal Nginx reload hook remain configured.
+- No DNS token is currently stored in the inspected credential locations.
+  Renewal still uses manual authentication until the scoped token is supplied
+  and Certbot reconfigure passes staging verification. No production certificate
+  replacement, DNS change, payment deployment or container restart occurred.
+
+## Automatic renewal preparation, 2026-10-29
+
+- Confirmed certbot.timer is already enabled and active on hetzner2. The wildcard
+  renewal configuration still uses manual authentication without a DNS auth hook,
+  so the timer cannot currently renew it unattended.
+- Installed /etc/letsencrypt/renewal-hooks/deploy/rutv-reload-nginx, mode 0750,
+  to validate Nginx configuration and reload it after successful renewal. Shell
+  syntax validation passed; the hook was not executed and no renewal was run.
+- Automatic DNS verification remains pending the user's choice between a scoped
+  Cloudflare DNS token and DNS challenge delegation, preserving the earlier
+  instruction to avoid Cloudflare API use until explicitly changed. Renewal is
+  not yet fully automatic; the existing certificate remains valid.
+
+## Wildcard certificate issued and installed, 2026-10-29
+
+- Issued a production Let's Encrypt certificate for rutv.co.il and *.rutv.co.il
+  using manual DNS-01 verification, without the Cloudflare API/plugin. Both TXT
+  challenge values were verified at the authoritative nameservers and public
+  resolvers before submission. The certificate expires 2027-01-27 10:08:13 UTC.
+  Manual DNS verification is required again for renewal; unattended renewal is
+  not configured. The temporary challenge TXT records can now be removed.
+- Stored protected configuration/certificate rollback backups in
+  /root/rutv-tls-backup-20261029T110749Z and changed the existing rutv.co.il/www
+  and lampac Nginx sites to the new shared Let's Encrypt certificate/key.
+  An immediate initial post-reload TLS check failed and triggered configuration
+  rollback. The new certificate chain independently verified against system CAs;
+  a second switch with bounded reload-settling checks passed for all hostnames.
+- Verified trusted TLS and hostname matching for rutv.co.il, www.rutv.co.il,
+  lampac.rutv.co.il and payments.rutv.co.il. Existing root/www HTTP 200 and lampac
+  HTTP 403 responses were preserved, including direct external HTTPS checks
+  against 46.224.52.226 with hostname verification enabled.
+- After checking active Nginx/systemd references and Docker bind mounts,
+  removed the superseded lampac Certbot certificate/renewal and the unused
+  Cloudflare certificate/key from their original paths. Protected rollback
+  copies remain. An older inactive Nginx backup was retained unchanged.
+  Nginx syntax validation passed after cleanup; Certbot now lists only the
+  root/wildcard certificate. Removed the unused Cloudflare DNS plugin.
+- No payment-service deployment, container restart or PayPal call occurred.
+  A payment-specific Nginx route is still required before deployment, and the
+  production application URLs currently remain configured with the server IP.
+
+## Wildcard certificate preparation, 2026-10-29
+
+- Authoritative DNS for rutv.co.il is hosted by Cloudflare. No Certbot DNS
+  credentials were found in the inspected Certbot/secrets directories, and
+  the existing lampac certificate renews through HTTP webroot validation.
+- Installed Ubuntu's python3-certbot-dns-cloudflare plugin and its dependencies
+  on hetzner2; Certbot confirmed the plugin is available. Nginx configuration
+  syntax validation still passed. No certificate was issued or removed and
+  no Nginx configuration was changed. Issuance/automated renewal of rutv.co.il
+  plus *.rutv.co.il awaits a restricted Cloudflare DNS token for that zone.
+  Existing certificates must stay in place until their replacement is installed
+  and verified. The payment service remains undeployed.
+
+## Container-local deployment readiness, 2026-10-29
+
+- Replaced the host's authenticated health probe with docker compose exec -T api
+  python -m app.readiness. Removed the deployment readiness-key requirement and
+  host-side Python helper. API_KEYS may remain empty when staff is configured;
+  no additional credential file or environment parameter is needed.
+- The container probe calls /internal/ready through 127.0.0.1:8000, sharing the
+  existing database and sticky singleton-ownership checks in the running API.
+  Only container loopback connections without forwarding headers may use this
+  route. The existing /health/ready route still requires authentication, and
+  the internal route is excluded from the API schema. No second app process,
+  migration run, financial dispatch or ownership reacquisition is introduced.
+- Thirty relevant backend tests and five subtests passed against the dedicated
+  payments_test_readiness database. All four deployment-helper tests, Ruff
+  lint/format, mypy and ShellCheck passed. Both Compose profiles still contain
+  only api/db, and the image build passed.
+- A disposable Docker Compose project with API_KEYS={} and a staff restriction
+  passed the actual container readiness command. Public health access, peer
+  container access and forged forwarded-loopback requests were rejected.
+  Terminating its database ownership connection caused /internal/ready to return
+  503 and the deployment probe to fail. All disposable smoke/test resources
+  were removed. No existing service restart, remote change, deployment or
+  PayPal call occurred. Earlier readiness-key requirements below are historical.
+
+## Hetzner2 provisioning and ingress inspection, 2026-10-29
+
+- Created /home/anton/rutv-payments-service with mode 0700 and copied the private
+  production profile there with mode 0600. Local/remote SHA-256 comparison
+  confirmed an identical copy; no secret values or hashes were printed.
+- Read-only inspection confirmed Docker Engine 29.3.1, Compose v5.1.1, the
+  deployment user's Docker access and an unused loopback port 8100. The payment
+  service is not running. Host Nginx configuration syntax validation passed,
+  but no payment upstream/site is configured.
+- Existing configured certificates serve lampac.rutv.co.il and rutv.co.il,
+  not the configured payment IP. A verified TLS connection for 46.224.52.226
+  failed with an IP mismatch; both configured certificate files also failed
+  OpenSSL's check for that IP. Existing HTTPS setup is unsuitable for the
+  payment profile's IP-based origin and return/cancel URLs.
+- A subsequent read-only certificate/SNI inventory confirmed the Let's Encrypt
+  certificate covers only lampac.rutv.co.il and expires 2026-12-20 08:59:01 UTC.
+  The certificate configured for rutv.co.il/www.rutv.co.il has subject CN=Cloudflare,
+  no subject alternative names, and extended key usage TLS Web Client
+  Authentication. It expires 2041-03-28 08:55:00 UTC and fails hostname checks
+  for rutv.co.il, www.rutv.co.il and payments.rutv.co.il. It is unsuitable as a
+  matching HTTPS server certificate for those names. Actual local Nginx SNI
+  handshakes confirmed these configured certificates are served. Neither has
+  an IP subject alternative name; an IP-address handshake serves the lampac
+  certificate. No Nginx or certificate changes were made.
+- The copied profile still has no trusted proxy peers or integration API keys.
+  Before deployment, configure the payment Nginx site, a matching trusted TLS
+  certificate, verified forwarded-header handling and explicit proxy peer trust.
+  Preserve application authentication and the staff IP restriction.
+- The new directory has no readiness API-key file and the deployment user has
+  no Docker registry configuration; private GHCR pulls need authentication.
+  GitHub DEPLOY_PATH must target /home/anton/rutv-payments-service, overriding
+  the workflow's older default path.
+- Only the requested directory and private profile were created remotely.
+  Nginx, certificates, Docker services and local profiles were unchanged; no
+  workflow, deployment or PayPal call was performed.
 
 ## Allowed IP setting rename, 2026-10-29
 

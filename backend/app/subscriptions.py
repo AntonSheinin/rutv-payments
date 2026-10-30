@@ -85,8 +85,8 @@ async def create_subscription(
             "application_context": {
                 "shipping_preference": "NO_SHIPPING",
                 "user_action": "SUBSCRIBE_NOW",
-                "return_url": settings.paypal_return_url + "?state=" + state,
-                "cancel_url": settings.paypal_cancel_url + "?state=" + state,
+                "return_url": str(settings.paypal_return_url) + "?state=" + state,
+                "cancel_url": str(settings.paypal_cancel_url) + "?state=" + state,
             },
         },
     )

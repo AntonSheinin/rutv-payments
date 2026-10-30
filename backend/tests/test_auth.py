@@ -3,6 +3,7 @@
 from ipaddress import ip_address
 
 import httpx
+import pytest
 from app.auth import password_hash
 from app.settings import Settings
 
@@ -47,18 +48,66 @@ async def test_private_system_endpoints_require_authentication(client, headers):
         assert (await client.get(path, headers=headers)).status_code == 200
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [("62.90.52.94", 200), ("203.0.113.10", 200), ("2001:db8::1", 200), ("203.0.113.11", 403)],
+)
+async def test_staff_login_accepts_only_configured_addresses(
+    client: httpx.AsyncClient, settings: Settings, source: str, expected: int
+) -> None:
+    """Every listed IPv4/IPv6 source can log in; a spoofed header cannot grant access."""
+    configured = Settings(
+        _env_file=None,
+        **{
+            **settings.model_dump(),
+            "allowed_ips": "62.90.52.94, 203.0.113.10, 2001:db8::1",
+        },
+    )
+    settings.allowed_ips = configured.allowed_ips
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=client.app, client=(source, 12345)),
+        base_url="http://testserver",
+    ) as browser:
+        response = await browser.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "http://testserver", "X-Forwarded-For": "62.90.52.94"},
+            json={"username": "admin", "password": "test-admin-password"},
+        )
+        assert response.status_code == expected
+
+
+@pytest.mark.parametrize("source", ["127.0.0.1", "::1", "172.18.0.1", "203.0.113.10"])
+async def test_internal_readiness_requires_container_loopback(client, settings, source):
+    """Container-local checks need no integration key; Docker/proxy peers cannot enter."""
+    settings.allowed_ips = [ip_address("62.90.52.94")]
+    settings.api_keys = {}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=client.app, client=(source, 12345)),
+        base_url="http://testserver",
+    ) as probe:
+        result = await probe.get("/internal/ready")
+        assert result.status_code == (200 if source in {"127.0.0.1", "::1"} else 403)
+        assert (await probe.get("/health/ready")).status_code == 403
+
+
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "Forwarded"])
+async def test_internal_readiness_rejects_forwarded_loopback(client, header):
+    """Even a proxy-restored loopback address cannot authenticate internal readiness."""
+    assert (await client.get("/internal/ready", headers={header: "127.0.0.1"})).status_code == 403
+
+
 async def test_public_api_key_access_is_independent_of_staff_source_ip(
     client: httpx.AsyncClient, headers: dict[str, str], settings: Settings
 ) -> None:
     """Keep valid integration keys usable while denying cookies from another source IP."""
-    settings.allowed_ip = ip_address("127.0.0.1")
+    settings.allowed_ips = [ip_address("127.0.0.1")]
     login = await client.post(
         "/api/v1/auth/login",
         headers={"Origin": "http://testserver"},
         json={"username": "admin", "password": "test-admin-password"},
     )
     assert login.status_code == 200
-    settings.allowed_ip = ip_address("62.90.52.94")
+    settings.allowed_ips = [ip_address("62.90.52.94")]
     assert (await client.get("/api/v1/auth/me")).status_code == 403
     assert (
         await client.get("/api/v1/auth/me", headers={"X-Forwarded-For": "62.90.52.94"})

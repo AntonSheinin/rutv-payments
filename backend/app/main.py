@@ -151,8 +151,27 @@ def live(user: User) -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/health/ready", response_model=HealthResponse)
-async def ready(user: User, db: Db, guard: Mutation) -> dict[str, str]:
+def require_container_loopback(request: Request) -> None:
+    """Allow readiness without credentials only over the container's own loopback."""
+    # Uvicorn may replace request.client from trusted proxy headers. Reject those
+    # headers even when they claim loopback, so proxy traffic cannot use this path.
+    if (
+        request.client is None
+        or request.client.host not in {"127.0.0.1", "::1"}
+        or "x-forwarded-for" in request.headers
+        or "forwarded" in request.headers
+    ):
+        raise HTTPException(403, "Container-local access required")
+
+
+@app.get("/health/ready", response_model=HealthResponse, dependencies=[Depends(authenticate)])
+@app.get(
+    "/internal/ready",
+    response_model=HealthResponse,
+    dependencies=[Depends(require_container_loopback)],
+    include_in_schema=False,
+)
+async def ready(db: Db, guard: Mutation) -> dict[str, str]:
     """Check the database and pinned ownership without a periodic heartbeat."""
     await db.execute(text("SELECT 1"))
     return {"status": "ready"}

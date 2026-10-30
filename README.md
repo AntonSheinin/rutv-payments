@@ -27,6 +27,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the dated project history.
 Manual GitHub deployment to `hetzner2` is documented in
 [deployment setup](docs/DEPLOYMENT.md). It uses the same Compose file as development,
 server-only runtime secrets and a manually triggered workflow; pushes do not deploy.
+The workflow contains the SSH transfer and server deployment steps; no separate
+deployment scripts or deployment folder are required.
 
 See [operations](docs/OPERATIONS.md) for financial rules, [integration](docs/INTEGRATION.md) for provider contracts and remaining merchant checks, and [verification](docs/VERIFICATION.md) for current validation results.
 
@@ -55,6 +57,10 @@ Open **http://localhost:8100**. Use localhost consistently for the app and PayPa
 For a fresh Compose installation, configure `.env.dev` and `POSTGRES_PASSWORD`, then run `docker compose --env-file .env.dev up --build -d`. Only `api` and `db` are defined. The API binds to loopback; the database port is unpublished. The image runs as UID/GID 10001. Its build explicitly reinstalls the local package to avoid stale cached application wheels, following [uv's local-package caching rules](https://docs.astral.sh/uv/concepts/cache/). No Nginx, remote deployment or tunnel is needed.
 
 `backend/app/settings.py` validates all application settings with no fallback values.
+Pydantic validates every profile parameter, including callback URLs, browser
+origins, credential entries and trusted proxy IPs; unknown dotenv parameters are
+rejected. Tests cover application security rules and deployment wiring rather
+than repeating Pydantic's required-field, type and numeric-bound checks.
 One `docker-compose.yml` serves both environments. Pass `--env-file .env.dev`
 for local builds or `--env-file .env.prod` for production; Compose passes the
 selected settings to the API and database. Production deployment pulls and tags
@@ -62,13 +68,35 @@ the built image, then uses `up --no-build`. There is no implicit `.env` file.
 All profiles contain the same
 parameters documented in `.env.example`; explicit empty values are allowed only
 where documented. Private `.env.dev` and `.env.prod` contain parameter assignments
-only; comments remain in `.env.example`. The prepared live profile still needs
-account hashes, HTTPS URLs and the trusted proxy IP before use.
+only; comments remain in `.env.example`. Before production deployment, verify the
+staff credentials, HTTPS hostname, callback URLs and trusted proxy address.
+
+`ALLOWED_IPS`, `ALLOWED_ORIGINS` and `FORWARDED_ALLOW_IPS` all use comma-separated
+values. Pydantic validates each address or origin. For example:
+
+```dotenv
+ALLOWED_IPS=62.90.52.94,203.0.113.10
+ALLOWED_ORIGINS=https://payments.rutv.co.il,http://localhost:8100
+FORWARDED_ALLOW_IPS=
+```
+
+An empty `ALLOWED_IPS` disables source filtering in Sandbox; live staff access
+requires at least one address. Origins include scheme, host and optional port;
+at least one is required. An empty `FORWARDED_ALLOW_IPS` trusts no proxy headers
+and suits direct local access. Behind production Nginx, set it to the verified
+proxy connection address as seen inside Docker, so staff IP checks use the
+original visitor address. Never use the staff address as the proxy address.
 
 The frontend path is fixed at `/service/frontend/dist`. Production integrations
 use the public HTTPS API with Bearer keys, independently of Docker networks;
-browser access remains restricted to the configured staff IP. The manual deployment
+browser access remains restricted to the configured staff IP addresses. The manual deployment
 workflow selects its built image automatically, without an image env parameter.
+
+Deployment checks readiness inside the API container with
+`docker compose --env-file .env.prod exec -T api python -m app.readiness`.
+This checks database connectivity and singleton ownership over container loopback,
+without an integration API key or `.health-api-key` file. Public health routes
+still require authentication. `API_KEYS='{}'` is valid when only staff use the service.
 
 Database configuration is only `POSTGRES_PASSWORD`, shared by PostgreSQL and the
 API. The application constructs its connection URL using fixed host `db`, port

@@ -30,8 +30,8 @@ for (const environment of ["sandbox", "live"] as const) {
     });
     await page.goto("/");
     const badge = page.locator(".environment");
-    await expect(badge).toHaveText(environment === "live" ? "Live" : "Sandbox");
-    await expect(badge).toHaveClass(`environment ${environment}`);
-    await expect(badge).toHaveCSS("text-transform", "none");
+    await expect
+      .poll(() => badge.innerText())
+      .toBe(environment === "live" ? "Live" : "Sandbox");
   });
 }

@@ -47,6 +47,7 @@ async def test_startup_no_worker_and_loss_of_ownership_blocks_mutations(client, 
         },
     )
     assert response.status_code == 503
+    assert (await client.get("/internal/ready")).status_code == 503
     assert not provider["requests"]
     assert (await client.get("/api/v1/payments", headers=headers)).status_code == 200
 

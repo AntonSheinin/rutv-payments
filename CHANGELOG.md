@@ -2,6 +2,22 @@
 
 Changes are grouped by commit date, newest first.
 
+## 2026-10-30 — Staff access and deployment simplification
+
+### Changed
+
+- Staff browser access supports multiple IPv4/IPv6 addresses through `ALLOWED_IPS`, replacing `ALLOWED_IP`. Allowed IPs, browser origins and trusted proxy addresses all use comma-separated lists.
+- Pydantic validates every explicit profile parameter, including callback URLs, browser origins, credential entries and trusted proxy IPs; unknown settings are rejected.
+- Deployment readiness runs inside the API container without an integration key or `.health-api-key` file. Public health routes remain authenticated, and integrations can stay disabled when only staff use the service.
+- The manual GitHub deployment workflow now contains the complete transfer and server deployment process. Removed the separate deployment folder and moved relevant checks into the backend test suite.
+- Removed redundant configuration and UI styling tests, refreshed setup documentation and expanded ignore rules for generated test and coverage artifacts.
+
+### Verification
+
+- All 210 backend tests and five subtests, migration/schema checks, lint, formatting, type checks, frontend build, workflow lint and the disposable container readiness/frontend smoke test passed.
+- Validation details are recorded in [verification](docs/VERIFICATION.md). Provider responses in automated financial tests are mocked; these checks do not certify live merchant behavior.
+- No production deployment or live financial action was performed.
+
 ## 2026-10-29 — Production configuration and controlled deployment
 
 ### Added

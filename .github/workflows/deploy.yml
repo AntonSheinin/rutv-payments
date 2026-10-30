@@ -51,16 +51,89 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Transfer release and deploy over verified SSH
+        id: deploy
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/anton/paypal-payment-service' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/anton/rutv-payments-service' }}
           DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           IMAGE_REF: ${{ needs.publish.outputs.image }}
         shell: bash
-        run: bash deployment/dispatch.sh
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?Set DEPLOY_HOST}"
+          : "${DEPLOY_USER:?Set DEPLOY_USER}"
+          : "${DEPLOY_PORT:?Set DEPLOY_PORT}"
+          : "${DEPLOY_PATH:?Set DEPLOY_PATH}"
+          : "${DEPLOY_KNOWN_HOSTS:?Set DEPLOY_KNOWN_HOSTS}"
+          : "${DEPLOY_SSH_PRIVATE_KEY:?Set DEPLOY_SSH_PRIVATE_KEY}"
+          : "${IMAGE_REF:?Set IMAGE_REF}"
+
+          # SSH invokes a remote shell; validate every interpolated argument.
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( 10#$DEPLOY_PORT >= 1 && 10#$DEPLOY_PORT <= 65535 ))
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_/-]+$ && "$DEPLOY_PATH" != / ]]
+          [[ "$IMAGE_REF" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+
+          umask 077
+          credentials=$(mktemp -d)
+          trap 'rm -rf -- "$credentials"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$credentials/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$credentials/known_hosts"
+          unset DEPLOY_SSH_PRIVATE_KEY
+          ssh_options=(
+            -p "$DEPLOY_PORT" -i "$credentials/key"
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$credentials/known_hosts"
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3
+          )
+          release="$DEPLOY_PATH/releases/$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+          # Only the manifest is transferred. Runtime credentials stay on the server.
+          # shellcheck disable=SC2029
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -eu; umask 077; test -f '$DEPLOY_PATH/.env.prod'; mkdir -p '$release'; cat > '$release/docker-compose.yml'" \
+            < docker-compose.yml
+
+          # shellcheck disable=SC2029
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_PATH' '$release' '$IMAGE_REF'" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          deploy_path=$(realpath -e "${1:?Supply deployment directory}")
+          release=$(realpath -e "${2:?Supply release directory}")
+          image_ref=${3:?Supply immutable image reference}
+          [[ "$release" == "$deploy_path/releases/"* ]]
+          [[ "$image_ref" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
+          test -f "$deploy_path/.env.prod"
+          [[ ! -e "$deploy_path/current" || -L "$deploy_path/current" ]]
+
+          # Preserve the server lock as well as workflow-level concurrency.
+          exec 9>"$deploy_path/.deploy.lock"
+          flock -n 9 || { echo 'Another deployment is running' >&2; exit 1; }
+          printf '%s\n' "$image_ref" > "$release/image.txt"
+          compose=(docker compose --project-name rutv-payments --project-directory "$deploy_path"
+            --env-file "$deploy_path/.env.prod" -f "$release/docker-compose.yml")
+          "${compose[@]}" config --quiet
+          "${compose[@]}" config --services
+          docker pull "$image_ref"
+          docker tag "$image_ref" rutv-payments:production
+          "${compose[@]}" up -d --no-build --wait --wait-timeout 90 db
+          # Replace the previous singleton before starting the new API owner.
+          "${compose[@]}" up -d --no-build --no-deps api
+          "${compose[@]}" exec -T api python -m app.readiness
+
+          # Readiness must pass before current changes; never replay or auto-rollback.
+          ln -sfnT "$release" "$deploy_path/.current-next"
+          mv -Tf "$deploy_path/.current-next" "$deploy_path/current"
+          printf 'Deployment ready: %s\n' "$image_ref"
+          REMOTE
       - name: Record deployed image
         env:
           IMAGE_REF: ${{ needs.publish.outputs.image }}
