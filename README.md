@@ -29,41 +29,50 @@ Manual GitHub deployment to `hetzner2` is documented in
 server-only runtime secrets and a manually triggered workflow; pushes do not deploy.
 The workflow contains the SSH transfer and server deployment steps; no separate
 deployment scripts or deployment folder are required.
+After checks, one production job builds, publishes and deploys. The server uses
+one Compose manifest; successful runs record the commit and image digest in the
+GitHub summary. A server lock covers manifest replacement and startup, followed
+by internal readiness verification.
 
 See [operations](docs/OPERATIONS.md) for financial rules, [integration](docs/INTEGRATION.md) for provider contracts and remaining merchant checks, and [verification](docs/VERIFICATION.md) for current validation results.
 
 ## Run locally
 
-The service runs only in **Linux Docker containers on Ubuntu**, using Docker Compose at **http://localhost:8100**. Start it with `docker compose --env-file .env.dev up --build -d`. Its `payments-db` volume contains the restored existing records. Compose uses the `db` service for PostgreSQL and configures the API's database connection.
+The service runs only in **Linux Docker containers on Ubuntu**, using Docker Compose at **http://localhost:8100**. Start it with `COMPOSE_ENV_FILES=.env.dev docker compose up --build -d`. Its `payments-db` volume contains the restored existing records. Compose uses the `db` service for PostgreSQL and configures the API's database connection.
 
 Install Docker Engine and Docker Compose on Ubuntu. Development checks use Python 3.14, uv and Node 22+; PostgreSQL 17 runs in the database container. The ignored `.env.dev`, `.env.prod` and `.local-access.json` contain this workspace's existing configuration/login; never commit them. New installations use `.env.example`. `AUTH_USERS` contains username-to-password_hash objects; `API_KEYS` contains name-to-sha256 objects. There are no access roles. Quote JSON environment values with single quotes so Compose preserves dollar signs in Argon2 hashes.
 
 ```sh
-docker compose --env-file .env.dev up --build -d
+COMPOSE_ENV_FILES=.env.dev docker compose up --build -d
 ```
 
 After changing the source, rebuild and recreate the API to serve the updated
 frontend and backend:
 
 ```sh
-docker compose --env-file .env.dev up -d --build api
+COMPOSE_ENV_FILES=.env.dev docker compose up -d --build api
 ```
 
 A container restart alone reuses the existing image and its previously built UI.
 Refresh the browser after the rebuilt API starts. The database volume is preserved.
 
+The backend image installs dependencies and the application in one `uv sync`
+step. Source changes rerun that step; uv caches downloaded dependencies and
+explicitly reinstalls the application to keep its packaged code current.
+
 Open **http://localhost:8100**. Use localhost consistently for the app and PayPal returns. API startup applies migrations and obtains singleton database ownership. Run one Uvicorn process. There is no worker, periodic polling, webhook, scheduled retry or startup replay.
 
-For a fresh Compose installation, configure `.env.dev` and `POSTGRES_PASSWORD`, then run `docker compose --env-file .env.dev up --build -d`. Only `api` and `db` are defined. The API binds to loopback; the database port is unpublished. The image runs as UID/GID 10001. Its build explicitly reinstalls the local package to avoid stale cached application wheels, following [uv's local-package caching rules](https://docs.astral.sh/uv/concepts/cache/). No Nginx, remote deployment or tunnel is needed.
+For a fresh Compose installation, configure `.env.dev` and `POSTGRES_PASSWORD`, then run `COMPOSE_ENV_FILES=.env.dev docker compose up --build -d`. Only `api` and `db` are defined. The API binds to loopback; the database port is unpublished. The image runs as UID/GID 10001. Its build explicitly reinstalls the local package to avoid stale cached application wheels, following [uv's local-package caching rules](https://docs.astral.sh/uv/concepts/cache/). No Nginx, remote deployment or tunnel is needed.
 
 `backend/app/settings.py` validates all application settings with no fallback values.
 Pydantic validates every profile parameter, including callback URLs, browser
 origins, credential entries and trusted proxy IPs; unknown dotenv parameters are
 rejected. Tests cover application security rules and deployment wiring rather
 than repeating Pydantic's required-field, type and numeric-bound checks.
-One `docker-compose.yml` serves both environments. Pass `--env-file .env.dev`
-for local builds or `--env-file .env.prod` for production; Compose passes the
-selected settings to the API and database. Production deployment pulls and tags
+One `docker-compose.yml` serves both environments. Set `COMPOSE_ENV_FILES=.env.dev`
+for local builds or `COMPOSE_ENV_FILES=.env.prod` for production. Compose uses
+that file for interpolation and the API imports it through `env_file`; PostgreSQL
+receives only its database name, username and password. Production deployment pulls and tags
 the built image, then uses `up --no-build`. There is no implicit `.env` file.
 All profiles contain the same
 parameters documented in `.env.example`; explicit empty values are allowed only
@@ -93,7 +102,7 @@ browser access remains restricted to the configured staff IP addresses. The manu
 workflow selects its built image automatically, without an image env parameter.
 
 Deployment checks readiness inside the API container with
-`docker compose --env-file .env.prod exec -T api python -m app.readiness`.
+`COMPOSE_ENV_FILES=.env.prod docker compose exec -T api python -m app.readiness`.
 This checks database connectivity and singleton ownership over container loopback,
 without an integration API key or `.health-api-key` file. Public health routes
 still require authentication. `API_KEYS='{}'` is valid when only staff use the service.

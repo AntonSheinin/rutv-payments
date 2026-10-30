@@ -1,17 +1,20 @@
 # Manual production deployment
 
-`.github/workflows/deploy.yml` runs only through **Actions → Deploy production →
+`.github/workflows/deploy.yml` runs only through **Actions -> Deploy production ->
 Run workflow**. It does not deploy on pushes, tags, or completion of Checks.
 The workflow must exist on the default branch before GitHub exposes manual runs.
 It deploys the commit selected in the Run workflow branch selector. The existing
 Checks workflow runs first, including backend tests, migration checks and the
 frontend build/format checks; it does not certify live PayPal behavior.
+After checks, a single production-environment job builds, publishes and deploys.
+Any configured environment approval happens before that job builds the image.
 
 The workflow publishes `ghcr.io/antonsheinin/rutv-payments:sha-<commit>` and deploys
 its resolved SHA-256 digest. All deployment commands are defined inline in this
 workflow, including validation, image publishing, SSH transfer, container
-replacement and readiness. Only the Compose file is copied to the release;
-server commands are streamed over SSH. Production credentials are not build arguments, image contents, or
+replacement and readiness. The Compose manifest and server commands are sent
+through one verified SSH connection; the server lock covers manifest installation
+and container replacement. Production credentials are not build arguments, image contents, or
 GitHub deployment artifacts.
 
 ## GitHub configuration
@@ -45,7 +48,7 @@ generate/replace production secrets.
   commands. Docker access grants control over the host; choose this user accordingly.
 - Create the dedicated deployment directory, writable by that user. Store its
   production `.env.prod` with mode `0600` and keep backups separately protected.
-  The shared Compose file uses the settings selected by `--env-file .env.prod`;
+  The shared Compose file uses the settings selected by `COMPOSE_ENV_FILES=.env.prod`;
   no development profile or server-side source checkout is needed. Deployment
   always uses `--no-build` to run the prebuilt image.
 - Authenticate that user's Docker client to GHCR if the package is private,
@@ -142,41 +145,45 @@ Docker network; an unauthenticated public request never gains business API acces
 
 ## Deployment and investigation
 
-GitHub and a server-side flock serialize deployments. Each run creates
-`releases/<commit>-<run-id>-<attempt>` containing the Compose manifest and
-image digest in `image.txt`. Deployment pulls that digest and tags it locally as
-`rutv-payments:production`, the fixed image name in production Compose. No image
-selection env parameter or generated env file is needed. Compose uses the fixed
-project name `rutv-payments`, preserving
+GitHub and a server-side flock serialize deployments. The server lock also
+blocks a new deployment while an earlier remote command survives a disconnected
+GitHub runner. Each run validates the incoming Compose manifest in a temporary
+file, pulls its image by digest and tags it locally as `rutv-payments:production`.
+Only after preflight and pull succeed does it replace
+`/home/anton/rutv-payments-service/docker-compose.yml` with that manifest.
+Temporary manifest and SSH credential files are cleaned up on exit. There are no
+release directories, image.txt records or current symlinks. The GitHub success
+summary records the selected commit and immutable image digest.
+
+Compose uses the fixed project name `rutv-payments`, preserving
 `rutv-payments_payments-db` between deployments. Do not rename this project or
 adopt an existing differently named database volume without an explicit data
 migration. The workflow never deletes volumes or prunes images.
 
-The server validates Compose without printing resolved secrets, pulls the image,
-waits for PostgreSQL health, and replaces the single API container. Application
-startup applies migrations under singleton ownership. There is a short API outage
-during replacement, with up to 150 seconds allowed for graceful API shutdown.
-Both services restart after a host reboot. The container probe confirms
-database/ownership readiness; it never calls PayPal. Success updates the `current`
-symlink to the release. The workflow does not verify public DNS/TLS/Nginx access
-or merchant capabilities.
+The server validates Compose without printing resolved secrets, then runs
+`docker compose up -d --no-build`. Compose honors the database health dependency
+before starting the API and replaces the single API container when needed.
+Application startup applies migrations under singleton ownership. There is a
+short API outage during replacement, with up to 150 seconds allowed for graceful
+API shutdown. Both services restart after a host reboot. The internal container
+probe then confirms database/ownership readiness; it never calls PayPal. The
+workflow does not verify public DNS/TLS/Nginx access or merchant capabilities.
 
 Failure stops the workflow without automatically rolling back migrations or
-replaying financial actions. The running API may already be the new release even
-if readiness failed; `current` remains the last successful release. Identify the
-failed run's release directory and inspect it explicitly. Keep logs/configuration
-private; never print `docker compose config` without `--quiet`/`--services`.
+replaying financial actions. After container replacement, the running API and
+server manifest may already be the attempted version even if readiness failed.
+Inspect the failed run and actual containers; the success summary is written only
+after readiness passes. Keep logs/configuration private; never print
+`docker compose config` without `--quiet`/`--services`.
 
-To inspect a successful deployment on the server:
+To inspect the deployment on the server:
 
 ```sh
 cd /home/anton/rutv-payments-service
-docker compose --project-name rutv-payments --project-directory "$PWD" \
-  --env-file .env.prod \
-  -f current/docker-compose.yml ps
+COMPOSE_ENV_FILES=.env.prod docker compose --project-name rutv-payments \
+  --project-directory "$PWD" -f docker-compose.yml ps
 ```
 
-Use the corresponding failed release's paths instead of `current` after failure.
 Rollback requires reviewing database migration compatibility and manually running
 the GitHub Actions workflow for the chosen compatible commit. Container replacement
 remains owned by the workflow. Adding or editing this workflow does not deploy.

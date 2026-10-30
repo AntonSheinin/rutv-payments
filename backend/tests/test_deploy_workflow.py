@@ -1,8 +1,11 @@
 """Exercise the workflow's inline deployment against isolated command doubles."""
 
+import base64
+import fcntl
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -12,15 +15,13 @@ import yaml
 
 
 class DeployWorkflowTests(unittest.TestCase):
-    """Keep the release pointer unchanged until container readiness succeeds."""
+    """Exercise preflight, locking and readiness without real deployment commands."""
 
     def setUp(self) -> None:
-        """Create a disposable release tree and commands that cannot contact Docker."""
+        """Create a disposable deployment directory and commands that cannot contact Docker."""
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.release = self.root / "releases" / "new"
-        self.release.mkdir(parents=True)
         workflow_path = Path(__file__).resolve().parents[2] / ".github/workflows/deploy.yml"
         self.workflow = yaml.load(workflow_path.read_text(), Loader=yaml.BaseLoader)
         step = next(
@@ -31,9 +32,9 @@ class DeployWorkflowTests(unittest.TestCase):
         assert match is not None
         self.remote_script = match[1]
         (self.root / ".env.prod").write_text("DISPOSABLE=true\n")
-        self.previous = self.root / "releases" / "previous"
-        self.previous.mkdir()
-        (self.root / "current").symlink_to(self.previous)
+        self.previous_manifest = "services: {}\n"
+        (self.root / "docker-compose.yml").write_text(self.previous_manifest)
+        self.manifest = (workflow_path.parents[2] / "docker-compose.yml").read_text()
         commands = self.root / "bin"
         commands.mkdir()
         self.log = self.root / "commands.log"
@@ -60,8 +61,8 @@ class DeployWorkflowTests(unittest.TestCase):
                 "-s",
                 "--",
                 str(self.root),
-                str(self.release),
                 "ghcr.io/example/payments@sha256:" + "a" * 64,
+                base64.b64encode(self.manifest.encode()).decode(),
             ],
             env={**self.environment, **settings},
             input=self.remote_script,
@@ -70,33 +71,37 @@ class DeployWorkflowTests(unittest.TestCase):
             check=False,
         )
 
-    def test_success_pulls_before_replacing_api_and_updates_pointer(self) -> None:
-        """Only a ready deployment becomes current, with a stable Compose project."""
+    def test_success_pulls_before_startup_and_checks_readiness(self) -> None:
+        """Install one manifest and check readiness after Compose starts both services."""
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         commands = self.log.read_text().splitlines()
         self.assertIn("config --quiet", commands[0])
-        self.assertTrue(commands[2].startswith("pull ghcr.io/example/payments@sha256:"))
-        self.assertTrue(commands[3].startswith("tag ghcr.io/example/payments@sha256:"))
-        self.assertTrue(commands[3].endswith("rutv-payments:production"))
-        self.assertTrue(commands[4].endswith("up -d --no-build --wait --wait-timeout 90 db"))
-        self.assertTrue(commands[5].endswith("up -d --no-build --no-deps api"))
-        self.assertIn("--project-name rutv-payments", commands[5])
-        self.assertTrue(commands[6].endswith("exec -T api python -m app.readiness"))
-        self.assertEqual(
-            (self.release / "image.txt").read_text().strip(),
-            "ghcr.io/example/payments@sha256:" + "a" * 64,
-        )
-        self.assertEqual((self.root / "current").resolve(), self.release)
+        self.assertTrue(commands[1].startswith("pull ghcr.io/example/payments@sha256:"))
+        self.assertTrue(commands[2].endswith("rutv-payments:production"))
+        self.assertIn("--project-name rutv-payments", commands[3])
+        self.assertTrue(commands[3].endswith("up -d --no-build"))
+        self.assertTrue(commands[4].endswith("exec -T api python -m app.readiness"))
+        self.assertEqual((self.root / "docker-compose.yml").read_text(), self.manifest)
+        self.assertFalse(list(self.root.glob(".compose.*")))
 
-    def test_failed_readiness_preserves_previous_pointer_without_rollback(self) -> None:
-        """An API may already be replaced when readiness fails; never replay or roll back."""
+    def test_failed_readiness_stops_without_rollback(self) -> None:
+        """A failed readiness check must fail the run without replay or automatic rollback."""
         result = self.deploy(READINESS_EXIT="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.root / "current").resolve(), self.previous)
+        self.assertNotIn("Deployment ready:", result.stdout)
         self.assertTrue(
             self.log.read_text().splitlines()[-1].endswith("exec -T api python -m app.readiness")
         )
+
+    def test_server_lock_blocks_manifest_and_container_changes(self) -> None:
+        """An earlier remote deployment can outlive its GitHub runner connection."""
+        with (self.root / ".deploy.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.log.exists())
+        self.assertEqual((self.root / "docker-compose.yml").read_text(), self.previous_manifest)
 
     def test_workflow_requires_manual_dispatch(self) -> None:
         """Pushes must never deploy; only an explicit dispatch starts the workflow."""
@@ -107,9 +112,10 @@ class DeployWorkflowTests(unittest.TestCase):
         result = self.deploy(CONFIG_EXIT="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(self.log.read_text().splitlines()), 1)
-        self.assertEqual((self.root / "current").resolve(), self.previous)
+        self.assertEqual((self.root / "docker-compose.yml").read_text(), self.previous_manifest)
+        self.assertFalse(list(self.root.glob(".compose.*")))
 
-    def test_runner_transfers_only_manifest_and_streams_commands(self) -> None:
+    def test_runner_streams_manifest_and_commands_in_one_verified_session(self) -> None:
         """Exercise runner packaging with a fake SSH client that never contacts a server."""
         ssh = self.root / "bin" / "ssh"
         log = self.root / "ssh.jsonl"
@@ -140,8 +146,6 @@ class DeployWorkflowTests(unittest.TestCase):
                 "DEPLOY_SSH_PRIVATE_KEY": "disposable-private-key",
                 "IMAGE_REF": "ghcr.io/example/payments@sha256:" + "a" * 64,
                 "GITHUB_SHA": "b" * 40,
-                "GITHUB_RUN_ID": "1",
-                "GITHUB_RUN_ATTEMPT": "1",
             },
             text=True,
             capture_output=True,
@@ -149,9 +153,10 @@ class DeployWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0]["stdin"], (repository / "docker-compose.yml").read_text())
-        self.assertEqual(calls[1]["stdin"].strip(), self.remote_script.strip())
+        self.assertEqual(len(calls), 1)
+        arguments = shlex.split(calls[0]["args"][-1])
+        self.assertEqual(base64.b64decode(arguments[-1]).decode(), self.manifest)
+        self.assertEqual(calls[0]["stdin"].strip(), self.remote_script.strip())
         self.assertIn("StrictHostKeyChecking=yes", calls[0]["args"])
         args = calls[0]["args"]
         self.assertFalse(Path(args[args.index("-i") + 1]).exists())

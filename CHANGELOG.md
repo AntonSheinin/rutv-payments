@@ -6,10 +6,13 @@ Changes are grouped by commit date, newest first.
 
 ### Changed
 
+- Compose imports the selected environment file directly for the API; local and production commands select it once through `COMPOSE_ENV_FILES`.
+- Simplified the backend image build to install dependencies and application code in one uv step while retaining the clean, non-root runtime image.
 - Staff browser access supports multiple IPv4/IPv6 addresses through `ALLOWED_IPS`, replacing `ALLOWED_IP`. Allowed IPs, browser origins and trusted proxy addresses all use comma-separated lists.
 - Pydantic validates every explicit profile parameter, including callback URLs, browser origins, credential entries and trusted proxy IPs; unknown settings are rejected.
 - Deployment readiness runs inside the API container without an integration key or `.health-api-key` file. Public health routes remain authenticated, and integrations can stay disabled when only staff use the service.
 - The manual GitHub deployment workflow now contains the complete transfer and server deployment process. Removed the separate deployment folder and moved relevant checks into the backend test suite.
+- Combined image publishing and deployment into one production job after checks, with one SSH session, one server Compose manifest and commit/image records in the GitHub summary. Removed release directories and symlinks while retaining server locking and readiness verification.
 - Removed redundant configuration and UI styling tests, refreshed setup documentation and expanded ignore rules for generated test and coverage artifacts.
 
 ### Verification

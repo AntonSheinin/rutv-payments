@@ -31,6 +31,7 @@ class ComposeProfileTests(unittest.TestCase):
                     f"PAYPAL_ENVIRONMENT={'sandbox' if profile == 'dev' else 'live'}\n"
                     f"COOKIE_SECURE={'false' if profile == 'dev' else 'true'}\n"
                     "ALLOWED_IPS=62.90.52.94\n"
+                    'AUTH_USERS=\'{"staff":{"password_hash":"$argon2id$disposable"}}\'\n'
                 )
                 replaced = {line.split("=", 1)[0] for line in prefix.splitlines()}
                 body = "\n".join(
@@ -47,14 +48,12 @@ class ComposeProfileTests(unittest.TestCase):
                     "compose",
                     "--project-directory",
                     str(root),
-                    "--env-file",
-                    str(root / f".env.{profile}"),
                     "-f",
                     str(repository / "docker-compose.yml"),
                 ]
                 result = subprocess.run(
                     command + ["config", "--format", "json"],
-                    env=environment,
+                    env={**environment, "COMPOSE_ENV_FILES": str(root / f".env.{profile}")},
                     check=True,
                     capture_output=True,
                     text=True,
@@ -74,6 +73,14 @@ class ComposeProfileTests(unittest.TestCase):
             self.assertEqual(set(production["services"]), {"api", "db"})
             self.assertEqual(api["environment"]["PAYPAL_ENVIRONMENT"], "live")
             self.assertEqual(api["environment"]["COOKIE_SECURE"], "true")
+            # Compose escapes literal dollars so rendered configuration can be reused.
+            self.assertEqual(
+                api["environment"]["AUTH_USERS"].replace("$$", "$"),
+                '{"staff":{"password_hash":"$argon2id$disposable"}}',
+            )
+            self.assertEqual(
+                set(db["environment"]), {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}
+            )
             self.assertEqual(api["environment"]["POSTGRES_PASSWORD"], "prod-disposable")
             self.assertEqual(db["environment"]["POSTGRES_PASSWORD"], "prod-disposable")
             self.assertEqual(api["ports"][0]["host_ip"], "127.0.0.1")

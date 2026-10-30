@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: payments
       POSTGRES_USER: payments
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Select --env-file .env.dev or .env.prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the selected env file}
     volumes: [payments-db:/var/lib/postgresql/data]
     restart: unless-stopped
     healthcheck:
@@ -16,26 +16,7 @@ services:
     image: rutv-payments:production
     pull_policy: never
     build: .
-    # Docker Compose resolves these from the explicitly selected --env-file.
-    environment:
-      - POSTGRES_PASSWORD
-      - APP_SECRET
-      - LOG_LEVEL
-      - AUTH_USERS
-      - API_KEYS
-      - ALLOWED_IPS
-      - COOKIE_SECURE
-      - ALLOWED_ORIGINS
-      - PAYPAL_ENVIRONMENT
-      - PAYPAL_CLIENT_ID
-      - PAYPAL_CLIENT_SECRET
-      - PAYPAL_MERCHANT_ID
-      - PAYPAL_RETURN_URL
-      - PAYPAL_CANCEL_URL
-      - MAXIMUM_AMOUNT
-      - AUTO_BILL_OUTSTANDING
-      - PAYMENT_FAILURE_THRESHOLD
-      - FORWARDED_ALLOW_IPS
+    env_file: ${COMPOSE_ENV_FILES:?Select COMPOSE_ENV_FILES=.env.dev or .env.prod}
     ports: ["127.0.0.1:8100:8000"]
     depends_on:
       db: {condition: service_healthy}

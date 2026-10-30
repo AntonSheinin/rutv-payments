@@ -5,6 +5,97 @@ The service runs in Linux Docker containers on Ubuntu through Docker Compose.
 The local Compose API was rebuilt and recreated from this branch on 2026-10-25;
 its existing database volume was preserved. No remote deployment was performed.
 
+## Deployment ports and migration review, 2026-10-30
+
+- Confirmed Compose publishes API container port 8000 only at host
+  127.0.0.1:8100. The Dockerfile declares port 8000 and starts one Uvicorn process
+  on 0.0.0.0:8000; the internal readiness probe uses 127.0.0.1:8000. PostgreSQL
+  remains unpublished and the API connects to db:5432. No port changes needed.
+- Confirmed the runtime image contains alembic.ini and backend/migrations.
+  FastAPI startup retains singleton ownership while calling Alembic upgrade head
+  before serving requests. Deployment's container-local readiness check follows
+  startup; migration failures prevent successful readiness. A separate workflow
+  migration command is unnecessary.
+- In Linux Docker against a disposable PostgreSQL 17 database named
+  payments_test_deployment_review, locked Alembic upgrade and schema comparison
+  passed, followed by all 13 lifecycle, populated-migration, Compose-profile and
+  deployment workflow tests. Removed the test database container, its anonymous
+  volume and network. No remote deployment or provider calls were performed.
+- The existing combined-Compose-startup availability finding below remains
+  unresolved; this review made no runtime or workflow changes.
+
+## Direct Compose environment-file import, 2026-10-30
+
+- Replaced the API's explicit setting list with `env_file`, using the single
+  profile path selected by `COMPOSE_ENV_FILES`. Updated local commands and the
+  inline deployment workflow. PostgreSQL still receives only its three database
+  settings; application credentials are not injected into that container.
+- All seven affected Compose/profile and deployment workflow tests passed in a
+  Linux Docker container, including production without a development file,
+  quoted dollar-containing values and the database environment boundary. Ruff
+  lint/format checks and whitespace checks passed.
+- Built the runtime image and smoke-tested the updated manifest under a unique
+  disposable Compose project with dummy Sandbox settings and a fresh database.
+  `config --services` returned only api/db; startup migrations, internal readiness,
+  frontend HTTP 200 and literal dollar preservation inside the API passed.
+  Removed the disposable containers, network and database volume. No provider
+  call, live financial action or remote deployment was performed. The existing
+  deployment review finding below remains unresolved.
+
+## Single-step backend image installation, 2026-10-30
+
+- Removed the dependency-only uv sync from the Dockerfile. One locked,
+  non-editable production sync now installs dependencies and the application,
+  explicitly reinstalling the local package to avoid stale cached application
+  code. Builder stages, the runtime user and Uvicorn command are unchanged.
+- The Docker build passed. A disposable Compose project with dummy Sandbox
+  settings passed fresh database initialization, startup migrations, internal
+  readiness and frontend HTTP 200. The running API retained UID/GID 10001 and
+  contained neither the uv nor Node executable. Both real profile renders still
+  contain only api/db; whitespace checks passed.
+- Removed the disposable containers, network and database volume. No production
+  deployment, server change or provider call was performed. The separately
+  documented deployment review finding remains unresolved.
+
+## Deployment review finding, 2026-10-30
+
+- Confirmed a regression in the simplified combined Compose startup: Compose
+  recreates the API before waiting for its database dependency to become healthy.
+  A disposable two-service reproduction started an old API, then changed the API
+  configuration and made the replacement database health check fail. Compose
+  exited with status 1 and left the new API in created state; the old API had
+  already been removed. The existing command-double tests and successful initial
+  startup smoke test do not cover this upgrade failure.
+- Restore the separate database up/wait and API up/no-deps steps so database
+  startup failure does not replace the API. This is a review finding; the workflow
+  has not yet been corrected. The reproduction used sleeping Python processes,
+  no application data, and no provider calls. Its containers and network were
+  removed; no server or deployment workflow was accessed.
+
+## Simplified manual deployment workflow, 2026-10-30
+
+- Reduced the workflow to checks followed by one production-environment job for
+  build, publishing and deployment. Environment approval, when configured,
+  precedes the build. The successful run summary records commit and image digest.
+- Removed release directories, image.txt and current symlinks. One verified SSH
+  session holds the server flock while validating the incoming manifest in a
+  temporary file, pulling/tagging the immutable image, installing the single
+  docker-compose.yml, starting Compose and checking internal readiness. Manifest
+  replacement happens only after validation and image pull succeed. Temporary
+  manifests and runner credentials are cleaned up. No automatic rollback occurs.
+- Updated workflow tests for one-session transfer, deployment order, preflight
+  failure, readiness failure, manual triggering and server lock contention.
+  All 11 affected tests and five subtests passed in Linux Docker. Ruff lint and
+  formatting, mypy, actionlint and whitespace checks passed.
+- Ran the actual inline remote commands against a disposable local Compose
+  project with dummy Sandbox settings and the existing built runtime image.
+  Registry pull/tag were replaced with the existing local image and the project
+  name/loopback port were isolated. Real Compose startup, database health,
+  migrations, manifest installation and internal readiness passed. Removed all
+  disposable containers, the network, database volume and temporary files.
+  No GitHub deployment, SSH connection, server change or live financial action
+  was performed. This local smoke check does not verify GHCR or SSH access.
+
 ## Commit validation and repository cleanup, 2026-10-30
 
 - Updated README and changelog for multiple staff addresses, consistent list
