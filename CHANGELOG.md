@@ -6,6 +6,8 @@ Changes are grouped by commit date, newest first.
 
 ### Changed
 
+- Deployment reads the server host and SSH username from repository secrets alongside the private key.
+- Deployment automatically accepts the SSH host key on each fresh runner, removing the required `DEPLOY_KNOWN_HOSTS` variable.
 - Compose imports the selected environment file directly for the API; local and production commands select it once through `COMPOSE_ENV_FILES`.
 - Simplified the backend image build to install dependencies and application code in one uv step while retaining the clean, non-root runtime image.
 - Staff browser access supports multiple IPv4/IPv6 addresses through `ALLOWED_IPS`, replacing `ALLOWED_IP`. Allowed IPs, browser origins and trusted proxy addresses all use comma-separated lists.

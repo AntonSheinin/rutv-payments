@@ -13,27 +13,29 @@ The workflow publishes `ghcr.io/antonsheinin/rutv-payments:sha-<commit>` and dep
 its resolved SHA-256 digest. All deployment commands are defined inline in this
 workflow, including validation, image publishing, SSH transfer, container
 replacement and readiness. The Compose manifest and server commands are sent
-through one verified SSH connection; the server lock covers manifest installation
+through one SSH connection; the server lock covers manifest installation
 and container replacement. Production credentials are not build arguments, image contents, or
 GitHub deployment artifacts.
 
 ## GitHub configuration
 
-Create the `production` environment. Its deployment job needs the following settings:
+Create the `production` environment. Add these secrets under repository Settings ->
+Secrets and variables -> Actions; the deployment job can also use secrets scoped
+to the `production` environment. Optional overrides remain Actions variables:
 
 | Name | Kind | Value |
 | --- | --- | --- |
 | `DEPLOY_SSH_PRIVATE_KEY` | Secret | Dedicated unencrypted CI SSH private key; authorize its public key on the server |
-| `DEPLOY_HOST` | Variable | Reachable server IPv4 address or DNS hostname; the local `hetzner2` SSH alias is not available on GitHub |
-| `DEPLOY_USER` | Variable | Server deployment user |
+| `DEPLOY_HOST` | Secret | Reachable server IPv4 address or DNS hostname; the local `hetzner2` SSH alias is not available on GitHub |
+| `DEPLOY_USER` | Secret | Server deployment user |
 | `DEPLOY_PORT` | Variable | SSH port; defaults to `22` |
 | `DEPLOY_PATH` | Variable | Dedicated directory; defaults to `/home/anton/rutv-payments-service` |
-| `DEPLOY_KNOWN_HOSTS` | Variable | Verified OpenSSH known-hosts entry for the host/port |
 
-Host verification is mandatory. Obtain the host key through your existing trusted
-server connection; do not accept an unverified key discovered during deployment.
-For a nonstandard port, use the `[host]:port` known-hosts form. Deployment paths
-support letters, digits, underscores, hyphens and slashes, without spaces.
+SSH uses `StrictHostKeyChecking=accept-new` with a temporary known-hosts file.
+Each fresh runner automatically trusts the first server key it receives; no
+`DEPLOY_KNOWN_HOSTS` variable is needed. This does not verify the server against a
+previously trusted identity. Deployment paths support letters, digits,
+underscores, hyphens and slashes, without spaces.
 Only the deployment job receives the SSH secret. The publisher uses the automatic
 `GITHUB_TOKEN` with `packages: write`; no publishing PAT is required.
 

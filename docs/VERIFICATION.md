@@ -5,6 +5,25 @@ The service runs in Linux Docker containers on Ubuntu through Docker Compose.
 The local Compose API was rebuilt and recreated from this branch on 2026-10-25;
 its existing database volume was preserved. No remote deployment was performed.
 
+## Repository deployment secrets, 2026-10-30
+
+- Updated DEPLOY_HOST and DEPLOY_USER to read the GitHub secrets context, matching
+  the repository secret names shown by the operator. DEPLOY_SSH_PRIVATE_KEY already
+  uses that context. Optional port/path overrides remain variables with defaults.
+- Actionlint and whitespace checks passed. Secret values and actual server SSH
+  connectivity were not inspected; no deployment was performed.
+
+## Automatic SSH host-key acceptance, 2026-10-30
+
+- Removed the required DEPLOY_KNOWN_HOSTS deployment variable at the operator's
+  request. SSH now uses StrictHostKeyChecking=accept-new with a temporary
+  known-hosts file removed with the runner credentials. Each fresh runner trusts
+  the first key it receives, without checking a previously trusted server identity.
+- All six deployment workflow tests passed in Linux Docker without a supplied
+  known-hosts variable. Ruff lint/format checks, actionlint and whitespace checks
+  passed. Tests use command doubles and do not establish actual SSH connectivity
+  or server identity. No remote deployment or provider call was performed.
+
 ## Deployment ports and migration review, 2026-10-30
 
 - Confirmed Compose publishes API container port 8000 only at host

@@ -41,14 +41,13 @@ jobs:
           reference=$(docker image inspect "$tag" --format '{{index .RepoDigests 0}}')
           [[ "$reference" == "$image@sha256:"* ]]
           printf 'image=%s\n' "$reference" >> "$GITHUB_OUTPUT"
-      - name: Deploy over verified SSH
+      - name: Deploy over SSH
         id: deploy
         env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/anton/rutv-payments-service' }}
-          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           IMAGE_REF: ${{ steps.publish.outputs.image }}
         shell: bash
@@ -58,7 +57,6 @@ jobs:
           : "${DEPLOY_USER:?Set DEPLOY_USER}"
           : "${DEPLOY_PORT:?Set DEPLOY_PORT}"
           : "${DEPLOY_PATH:?Set DEPLOY_PATH}"
-          : "${DEPLOY_KNOWN_HOSTS:?Set DEPLOY_KNOWN_HOSTS}"
           : "${DEPLOY_SSH_PRIVATE_KEY:?Set DEPLOY_SSH_PRIVATE_KEY}"
           : "${IMAGE_REF:?Set IMAGE_REF}"
 
@@ -74,11 +72,11 @@ jobs:
           credentials=$(mktemp -d)
           trap 'rm -rf -- "$credentials"' EXIT
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$credentials/key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$credentials/known_hosts"
           unset DEPLOY_SSH_PRIVATE_KEY
+          # Each fresh runner accepts the first host key without a pinned identity.
           ssh_options=(
             -p "$DEPLOY_PORT" -i "$credentials/key"
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
             -o "UserKnownHostsFile=$credentials/known_hosts"
             -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3
           )

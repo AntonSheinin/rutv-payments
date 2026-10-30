@@ -115,7 +115,7 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual((self.root / "docker-compose.yml").read_text(), self.previous_manifest)
         self.assertFalse(list(self.root.glob(".compose.*")))
 
-    def test_runner_streams_manifest_and_commands_in_one_verified_session(self) -> None:
+    def test_runner_streams_manifest_and_commands_in_one_session(self) -> None:
         """Exercise runner packaging with a fake SSH client that never contacts a server."""
         ssh = self.root / "bin" / "ssh"
         log = self.root / "ssh.jsonl"
@@ -142,7 +142,6 @@ class DeployWorkflowTests(unittest.TestCase):
                 "DEPLOY_USER": "test",
                 "DEPLOY_PORT": "22",
                 "DEPLOY_PATH": str(self.root),
-                "DEPLOY_KNOWN_HOSTS": "disposable-host-key",
                 "DEPLOY_SSH_PRIVATE_KEY": "disposable-private-key",
                 "IMAGE_REF": "ghcr.io/example/payments@sha256:" + "a" * 64,
                 "GITHUB_SHA": "b" * 40,
@@ -157,7 +156,7 @@ class DeployWorkflowTests(unittest.TestCase):
         arguments = shlex.split(calls[0]["args"][-1])
         self.assertEqual(base64.b64decode(arguments[-1]).decode(), self.manifest)
         self.assertEqual(calls[0]["stdin"].strip(), self.remote_script.strip())
-        self.assertIn("StrictHostKeyChecking=yes", calls[0]["args"])
+        self.assertIn("StrictHostKeyChecking=accept-new", calls[0]["args"])
         args = calls[0]["args"]
         self.assertFalse(Path(args[args.index("-i") + 1]).exists())
         self.assertNotIn("disposable-private-key", result.stdout + result.stderr)
